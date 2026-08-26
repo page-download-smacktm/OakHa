@@ -6,6 +6,7 @@
 #include "acorn/apps/files.h"
 #include "acorn/apps/snake.h"
 #include "acorn/apps/minesweeper.h"
+#include "acorn/apps/tetris.h"
 #include "acorn/apps/shell.h"
 #include "acorn/vga.h"
 
@@ -34,7 +35,7 @@ static char raw_history[18][80];
 static unsigned int raw_history_length;
 
 enum { GUI_DESKTOP, GUI_FILES, GUI_SNAKE, GUI_TERMINAL, GUI_FULLSCREEN_SNAKE,
-    GUI_FULLSCREEN_MINESWEEPER };
+    GUI_FULLSCREEN_MINESWEEPER, GUI_FULLSCREEN_TETRIS };
 enum { KEY_F1 = 0x80, KEY_F2, KEY_F3 };
 
 static void draw_cursor(void);
@@ -87,6 +88,15 @@ static void enter_fullscreen_minesweeper(void)
     previous_mouse_buttons = 0;
     minesweeper_app_draw_fullscreen();
     draw_cursor();
+}
+
+static void enter_fullscreen_tetris(void)
+{
+    gui_mode = GUI_FULLSCREEN_TETRIS;
+    tetris_app_init();
+    dillo_platform_clear_events();
+    cursor_visible = 0;
+    tetris_app_draw_fullscreen();
 }
 
 static void raw_history_add(const char *text)
@@ -235,6 +245,7 @@ void gui_keyboard_input(int value)
                 draw_desktop();
             } else if (command_mode == SHELL_RUN_APP) {
                 if (shell_requested_app()[0] == 's') enter_fullscreen_snake();
+                else if (shell_requested_app()[0] == 't') enter_fullscreen_tetris();
                 else enter_fullscreen_minesweeper();
             } else {
                 raw_history_add(command_text);
@@ -268,6 +279,16 @@ void gui_keyboard_input(int value)
         draw_cursor();
         return;
     }
+    if (gui_mode == GUI_FULLSCREEN_TETRIS) {
+        if (value == 0x03) {
+            dillo_platform_clear_events();
+            enter_terminal();
+            return;
+        }
+        tetris_app_key(value);
+        tetris_app_draw_fullscreen();
+        return;
+    }
     if (value == KEY_F1) {
         enter_terminal();
         return;
@@ -297,6 +318,8 @@ void gui_keyboard_input(int value)
         sizeof(terminal_output));
     if (command_mode == SHELL_RUN_APP) {
         if (shell_requested_app()[0] == 's') enter_fullscreen_snake();
+        else if (shell_requested_app()[0] == 't') enter_fullscreen_tetris();
+        else enter_fullscreen_minesweeper();
     } else if (command_mode >= GUI_DESKTOP && command_mode <= GUI_SNAKE) {
         gui_mode = command_mode;
         if (gui_mode == GUI_SNAKE) snake_app_init();
@@ -309,6 +332,7 @@ void gui_mouse_input(int x, int y, unsigned char buttons)
 {
     dillo_platform_push_mouse(x, y, buttons);
     if (gui_mode == GUI_TERMINAL) return;
+    if (gui_mode == GUI_FULLSCREEN_TETRIS) return;
     if (gui_mode == GUI_FULLSCREEN_MINESWEEPER) {
         minesweeper_app_mouse(x, y, buttons, previous_mouse_buttons);
         previous_mouse_buttons = buttons;
@@ -362,6 +386,11 @@ void gui_tick(void)
             minesweeper_app_draw_fullscreen();
             draw_cursor();
         }
+        return;
+    }
+    if (gui_mode == GUI_FULLSCREEN_TETRIS) {
+        tetris_app_tick();
+        if (gui_ticks % 16 == 0) tetris_app_draw_fullscreen();
         return;
     }
     if (gui_mode == GUI_SNAKE && gui_ticks % 80 == 0) {
