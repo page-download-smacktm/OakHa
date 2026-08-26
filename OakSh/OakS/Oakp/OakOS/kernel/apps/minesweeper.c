@@ -1,5 +1,7 @@
 #include "acorn/apps/minesweeper.h"
 #include "acorn/framebuffer.h"
+#include "acorn/entropy.h"
+#include "acorn/timer.h"
 
 #define BOARD_COLUMNS 10
 #define BOARD_ROWS 8
@@ -25,6 +27,76 @@ static unsigned int marked_count;
 static int game_over;
 static int game_won;
 static unsigned long result_ticks;
+static unsigned int rng_state;
+static int rng_seeded;
+
+/*
+ * xorshift32: rápido, sem estado grande, adequado para um kernel bare-metal.
+ *
+ * IMPORTANTE: RDRAND (acorn/entropy.h) pode não existir na CPU/VM alvo, e
+ * timer_ticks() pode valer sempre 0 se minesweeper_app_init() rodar num
+ * ponto fixo do boot antes do timer avançar — nesse caso a semente antiga
+ * (ticks ^ endereço estático) era idêntica em todo boot, e por isso as
+ * bombas sempre caíam nas mesmas casas.
+ *
+ * Para corrigir isso de vez, usamos RDTSC (contador de ciclos da CPU) como
+ * fonte adicional. RDTSC existe em praticamente qualquer x86 desde o
+ * Pentium, não depende do subsistema de timer estar inicializado, e o
+ * valor já é diferente a cada boot só pelo jitter de hardware (tempo de
+ * BIOS/bootloader, cache, interrupções, etc.), mesmo que tudo mais seja
+ * determinístico.
+ */
+static unsigned long long minesweeper_read_tsc(void)
+{
+    unsigned int low;
+    unsigned int high;
+    __asm__ volatile ("rdtsc" : "=a"(low), "=d"(high));
+    return ((unsigned long long)high << 32) | low;
+}
+
+static void minesweeper_rng_seed(void)
+{
+    unsigned long long tsc = minesweeper_read_tsc();
+    unsigned int seed = (unsigned int)(tsc ^ (tsc >> 32));
+    unsigned int entropy_word = 0;
+    if (entropy_fill((unsigned char *)&entropy_word, sizeof(entropy_word)))
+        seed ^= entropy_word;
+    seed ^= (unsigned int)timer_ticks();
+    seed ^= (unsigned int)(unsigned long)&rng_state;
+    seed ^= 0x9E3779B9u;
+    if (seed == 0) seed = 0x2545F491u;
+    rng_state = seed;
+    rng_seeded = 1;
+}
+
+static unsigned int minesweeper_rng_next(void)
+{
+    if (!rng_seeded) minesweeper_rng_seed();
+    /* Mistura RDTSC (e os ticks) a cada chamada, não só na semente. Isso
+     * garante variação real mesmo se o jogo for reiniciado repetidamente
+     * em sequência rápida, já que o número exato de ciclos gastos entre
+     * chamadas varia com timing de hardware/entrada do usuário. */
+    unsigned long long tsc = minesweeper_read_tsc();
+    rng_state ^= (unsigned int)tsc;
+    rng_state ^= (unsigned int)timer_ticks();
+    rng_state ^= rng_state << 13;
+    rng_state ^= rng_state >> 17;
+    rng_state ^= rng_state << 5;
+    if (rng_state == 0) rng_state = 0x2545F491u;
+    return rng_state;
+}
+
+static unsigned int minesweeper_rng_below(unsigned int bound)
+{
+    /* Descarta valores no topo do intervalo para não favorecer os
+     * primeiros restos (evita o viés de módulo). */
+    unsigned int limit = (0xFFFFFFFFu / bound) * bound;
+    unsigned int value;
+    do {
+        value = minesweeper_rng_next();
+    } while (value >= limit);
+    return value % bound;
+}
 
 static unsigned int board_x(void)
 {
@@ -82,22 +154,30 @@ static void check_win(void)
 
 void minesweeper_app_init(void)
 {
-    unsigned int placed = 0;
+    unsigned int cells[BOARD_COLUMNS * BOARD_ROWS];
+    unsigned int total_cells = BOARD_COLUMNS * BOARD_ROWS;
     for (unsigned int row = 0; row < BOARD_ROWS; ++row)
         for (unsigned int column = 0; column < BOARD_COLUMNS; ++column) {
             mines[row][column] = 0;
             revealed[row][column] = 0;
             marked[row][column] = 0;
         }
-    while (placed < MINE_COUNT) {
-        unsigned int position = (placed * 37 + 11) %
-            (BOARD_COLUMNS * BOARD_ROWS);
+
+    /* Preenche todas as posições e embaralha com Fisher-Yates para
+     * escolher MINE_COUNT delas de forma uniformemente aleatória. */
+    for (unsigned int index = 0; index < total_cells; ++index)
+        cells[index] = index;
+    for (unsigned int index = total_cells - 1; index > 0; --index) {
+        unsigned int swap_index = minesweeper_rng_below(index + 1);
+        unsigned int temp = cells[index];
+        cells[index] = cells[swap_index];
+        cells[swap_index] = temp;
+    }
+    for (unsigned int placed = 0; placed < MINE_COUNT; ++placed) {
+        unsigned int position = cells[placed];
         unsigned int row = position / BOARD_COLUMNS;
         unsigned int column = position % BOARD_COLUMNS;
-        if (!mines[row][column]) {
-            mines[row][column] = 1;
-            ++placed;
-        }
+        mines[row][column] = 1;
     }
     cursor_x = BOARD_COLUMNS / 2;
     cursor_y = BOARD_ROWS / 2;
