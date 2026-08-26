@@ -116,6 +116,11 @@ tela cheia. Use WASD para mover, R para reiniciar e Ctrl+C para voltar ao shell.
 launcher aceita apenas aplicativos registrados e um ELF arbitrario ainda nao e
 executado pelo kernel.
 
+Use `run minesweeper` ou `run minesweeper.elf` para abrir o Campo Minado em
+tela cheia. Clique com o botao esquerdo para revelar uma casa e com o direito
+para marca-la; WASD move a selecao, Espaco revela, F marca, R reinicia e Ctrl+C
+volta ao shell.
+
 Para depurar, em outro terminal use `gdb build/acorn.elf`, execute `target
 remote :1234` e entao `continue`.
 

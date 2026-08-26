@@ -113,9 +113,15 @@ static int run_command(const char *line, char *output, unsigned int output_size)
     char buffer[64];
     if (starts_with(line, "run ")) {
         const char *name = line + 4;
-        if (equals(name, "snake") || equals(name, "snake.elf")) {
-            copy_text(requested_app, sizeof(requested_app), "snake");
+        if (equals(name, "snake") || equals(name, "snake.elf") ||
+            equals(name, "minesweeper") || equals(name, "minesweeper.elf")) {
+            if (starts_with(name, "mine"))
+                copy_text(requested_app, sizeof(requested_app), "minesweeper");
+            else
+                copy_text(requested_app, sizeof(requested_app), "snake");
             copy_text(output, output_size, "starting snake");
+            if (starts_with(name, "mine"))
+                copy_text(output, output_size, "starting minesweeper");
             return SHELL_RUN_APP;
         }
         copy_text(output, output_size, "run: application unavailable");
