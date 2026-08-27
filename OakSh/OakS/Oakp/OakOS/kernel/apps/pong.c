@@ -17,13 +17,22 @@ enum {
     PONG_SIDE_MARGIN = 32,
     PONG_PADDLE_WIDTH = 14,
     PONG_PADDLE_HEIGHT = 90,
-    PONG_PADDLE_STEP = 18,
+    PONG_PADDLE_SPEED = 7,
+    PONG_HOLD_GRACE = 5,
     PONG_BALL_SIZE = 14,
     PONG_WIN_SCORE = 7,
+    PONG_BALL_SPEED_START = 6,
+    PONG_BALL_SPEED_MAX = 16,
+    PONG_BALL_SPEEDUP = 1,
 };
 
 static int left_paddle_y;
 static int right_paddle_y;
+static int left_hold_dir;
+static int right_hold_dir;
+static unsigned long left_hold_tick;
+static unsigned long right_hold_tick;
+static unsigned long pong_ticks;
 static int ball_x;
 static int ball_y;
 static int ball_dx;
@@ -107,7 +116,7 @@ static void serve_ball(int towards_left)
     unsigned int roll = pong_rng_next();
     ball_x = (int)field_width() / 2 - PONG_BALL_SIZE / 2;
     ball_y = (int)field_height() / 2 - PONG_BALL_SIZE / 2;
-    ball_dx = towards_left ? -6 : 6;
+    ball_dx = towards_left ? -PONG_BALL_SPEED_START : PONG_BALL_SPEED_START;
     ball_dy = (roll & 1) ? 4 : -4;
     if (roll & 2) ball_dy = -ball_dy;
 }
@@ -116,6 +125,11 @@ void pong_app_init(void)
 {
     left_paddle_y = paddle_max_y() / 2;
     right_paddle_y = paddle_max_y() / 2;
+    left_hold_dir = 0;
+    right_hold_dir = 0;
+    left_hold_tick = 0;
+    right_hold_tick = 0;
+    pong_ticks = 0;
     left_score = 0;
     right_score = 0;
     game_over = 0;
@@ -130,25 +144,65 @@ void pong_app_key(int value)
         return;
     }
     if (game_over) return;
-    int max_y = paddle_max_y();
     if (value == 'w' || value == 'W') {
-        left_paddle_y -= PONG_PADDLE_STEP;
-        if (left_paddle_y < 0) left_paddle_y = 0;
+        left_hold_dir = -1;
+        left_hold_tick = pong_ticks;
     } else if (value == 's' || value == 'S') {
-        left_paddle_y += PONG_PADDLE_STEP;
-        if (left_paddle_y > max_y) left_paddle_y = max_y;
+        left_hold_dir = 1;
+        left_hold_tick = pong_ticks;
     } else if (value == 'i' || value == 'I') {
-        right_paddle_y -= PONG_PADDLE_STEP;
-        if (right_paddle_y < 0) right_paddle_y = 0;
+        right_hold_dir = -1;
+        right_hold_tick = pong_ticks;
     } else if (value == 'k' || value == 'K') {
-        right_paddle_y += PONG_PADDLE_STEP;
-        if (right_paddle_y > max_y) right_paddle_y = max_y;
+        right_hold_dir = 1;
+        right_hold_tick = pong_ticks;
     }
+}
+
+/*
+ * O teclado so entrega eventos de tecla pressionada (com auto-repeat de
+ * hardware enquanto o usuario segura), sem evento de soltar. Por isso a
+ * raquete continua se movendo a cada tick enquanto os eventos de repeticao
+ * continuarem chegando (segurar a tecla) e para pouco depois de soltar,
+ * usando uma janela de tolerancia (PONG_HOLD_GRACE ticks) para nao parar
+ * entre dois pulsos de auto-repeat.
+ */
+static void apply_paddle_hold(void)
+{
+    int max_y = paddle_max_y();
+    if (left_hold_dir != 0) {
+        if (pong_ticks - left_hold_tick <= PONG_HOLD_GRACE) {
+            left_paddle_y += left_hold_dir * PONG_PADDLE_SPEED;
+            if (left_paddle_y < 0) left_paddle_y = 0;
+            if (left_paddle_y > max_y) left_paddle_y = max_y;
+        } else {
+            left_hold_dir = 0;
+        }
+    }
+    if (right_hold_dir != 0) {
+        if (pong_ticks - right_hold_tick <= PONG_HOLD_GRACE) {
+            right_paddle_y += right_hold_dir * PONG_PADDLE_SPEED;
+            if (right_paddle_y < 0) right_paddle_y = 0;
+            if (right_paddle_y > max_y) right_paddle_y = max_y;
+        } else {
+            right_hold_dir = 0;
+        }
+    }
+}
+
+static int clamp_speed(int value)
+{
+    if (value > PONG_BALL_SPEED_MAX) return PONG_BALL_SPEED_MAX;
+    if (value < -PONG_BALL_SPEED_MAX) return -PONG_BALL_SPEED_MAX;
+    return value;
 }
 
 void pong_app_tick(void)
 {
+    ++pong_ticks;
     if (game_over) return;
+    apply_paddle_hold();
+
     int width = (int)field_width();
     int height = (int)field_height();
     int next_x = ball_x + ball_dx;
@@ -166,22 +220,18 @@ void pong_app_tick(void)
         next_y + PONG_BALL_SIZE >= left_paddle_y &&
         next_y <= left_paddle_y + PONG_PADDLE_HEIGHT) {
         next_x = PONG_PADDLE_WIDTH;
-        ball_dx = -ball_dx;
+        ball_dx = clamp_speed(-ball_dx + PONG_BALL_SPEEDUP);
         int center = left_paddle_y + PONG_PADDLE_HEIGHT / 2;
         int offset = (next_y + PONG_BALL_SIZE / 2) - center;
-        ball_dy += offset / 12;
-        if (ball_dy > 9) ball_dy = 9;
-        if (ball_dy < -9) ball_dy = -9;
+        ball_dy = clamp_speed(ball_dy + offset / 12);
     } else if (ball_dx > 0 && next_x + PONG_BALL_SIZE >= width - PONG_PADDLE_WIDTH &&
         next_y + PONG_BALL_SIZE >= right_paddle_y &&
         next_y <= right_paddle_y + PONG_PADDLE_HEIGHT) {
         next_x = width - PONG_PADDLE_WIDTH - PONG_BALL_SIZE;
-        ball_dx = -ball_dx;
+        ball_dx = clamp_speed(-ball_dx - PONG_BALL_SPEEDUP);
         int center = right_paddle_y + PONG_PADDLE_HEIGHT / 2;
         int offset = (next_y + PONG_BALL_SIZE / 2) - center;
-        ball_dy += offset / 12;
-        if (ball_dy > 9) ball_dy = 9;
-        if (ball_dy < -9) ball_dy = -9;
+        ball_dy = clamp_speed(ball_dy + offset / 12);
     }
 
     if (next_x < -PONG_BALL_SIZE) {
