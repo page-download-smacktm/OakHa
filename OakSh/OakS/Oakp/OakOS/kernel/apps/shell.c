@@ -115,13 +115,17 @@ static int run_command(const char *line, char *output, unsigned int output_size)
         const char *name = line + 4;
         if (equals(name, "snake") || equals(name, "snake.elf") ||
             equals(name, "minesweeper") || equals(name, "minesweeper.elf") ||
-            equals(name, "tetris") || equals(name, "tetris.elf")) {
+            equals(name, "tetris") || equals(name, "tetris.elf") ||
+            equals(name, "pong") || equals(name, "pong.elf")) {
             if (starts_with(name, "mine")) {
                 copy_text(requested_app, sizeof(requested_app), "minesweeper");
                 copy_text(output, output_size, "starting minesweeper");
             } else if (starts_with(name, "tetris")) {
                 copy_text(requested_app, sizeof(requested_app), "tetris");
                 copy_text(output, output_size, "starting tetris");
+            } else if (starts_with(name, "pong")) {
+                copy_text(requested_app, sizeof(requested_app), "pong");
+                copy_text(output, output_size, "starting pong");
             } else {
                 copy_text(requested_app, sizeof(requested_app), "snake");
                 copy_text(output, output_size, "starting snake");
@@ -131,7 +135,7 @@ static int run_command(const char *line, char *output, unsigned int output_size)
         copy_text(output, output_size, "run: application unavailable");
     } else if (equals(line, "help")) {
         copy_text(output, output_size,
-            "help run(snake/minesweeper/tetris) cd ls show mkdir calc net dns tcp http curl browse ret-grafic");
+            "help run(snake/minesweeper/tetris/pong) cd ls show mkdir calc net dns tcp http curl browse ret-grafic");
     } else if (equals(line, "net")) {
         copy_text(output, output_size,
             e1000_available() ? "network: e1000 ready" : "network: no e1000");
