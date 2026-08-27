@@ -1,6 +1,7 @@
 #include "acorn/gui.h"
 #include "acorn/dillo_platform.h"
 #include "acorn/framebuffer.h"
+#include "acorn/assets.h"
 #include "acorn/mouse.h"
 #include "acorn/serial.h"
 #include "acorn/apps/files.h"
@@ -11,12 +12,12 @@
 #include "acorn/apps/shell.h"
 #include "acorn/vga.h"
 
-#define COLOR_BG 0x101820
-#define COLOR_BAR 0x183A5A
-#define COLOR_PANEL 0x244052
-#define COLOR_WINDOW 0x1D303A
-#define COLOR_TITLE 0x2A5B63
-#define COLOR_TEXT 0xD8F3DC
+#define COLOR_BG 0x20342E
+#define COLOR_BAR 0x126B45
+#define COLOR_PANEL 0x2F6B52
+#define COLOR_WINDOW 0x315A59
+#define COLOR_TITLE 0x328B78
+#define COLOR_TEXT 0xF2FFF0
 #define COLOR_CURSOR 0xF4D35E
 
 static unsigned int terminal_x;
@@ -46,7 +47,7 @@ static const char cursor_shape[18][18] = {
     "    BWWB         ", "    BWWWB        ", "    BWWWWB       ",
     "    BWWWWWB      ", "    BWWWWWWB     ", "    BWWWWWWWB    ",
     "    BWWWWWWWWB   ", "    BWWWWWWWWWB  ", "    BWWWWWBBBBBB ",
-    "    BWWBWWB      ", "    BWBWWB       ", "    BB WWB       ",
+    "    BWWBWWB      ", "    BWBWWB       ", "    BB           ",
     "                 ", "                 ", "                 "
 };
 
@@ -190,6 +191,8 @@ static void draw_desktop(void)
     unsigned int screen_height = framebuffer_height();
     cursor_visible = 0;
     framebuffer_clear(COLOR_BG);
+    framebuffer_draw_image(0, 56, screen_width, screen_height - 56,
+        652, 432, oakos_background_pixels, oakos_background_alpha);
     framebuffer_fill_rect(0, 0, screen_width, 56, COLOR_BAR);
     framebuffer_draw_text(24, 18, "OAKOS DESKTOP", COLOR_TEXT, 2);
     framebuffer_fill_rect(screen_width - 120, 16, 88, 24, 0x4CC9A4);
@@ -202,7 +205,8 @@ static void draw_desktop(void)
     framebuffer_draw_text(48, 208, "SETTINGS", COLOR_TEXT, 2);
     framebuffer_fill_rect(42, 246, 56, 42, COLOR_TITLE);
     framebuffer_fill_rect(182, 246, 56, 42, COLOR_TITLE);
-    framebuffer_draw_text(50, 258, "SHELL", COLOR_TEXT, 1);
+    framebuffer_draw_image(42, 246, 56, 42, 56, 42,
+        oakos_shell_icon_pixels, oakos_shell_icon_alpha);
     framebuffer_draw_text(190, 258, "F3", COLOR_TEXT, 1);
     framebuffer_draw_text(40, 300, "APPS", COLOR_CURSOR, 1);
     if (gui_mode != GUI_DESKTOP)

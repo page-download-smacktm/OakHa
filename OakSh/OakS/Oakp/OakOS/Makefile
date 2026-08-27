@@ -15,6 +15,8 @@ VNC_WEB ?= /usr/share/novnc
 USER_ELF := $(BUILD)/user/init.elf
 USER_OBJ := $(BUILD)/user/init.o $(BUILD)/user/libc.o
 USER_BINARY_OBJ := $(BUILD)/user/init-elf.o
+ASSET_SOURCE := $(BUILD)/generated_assets.c
+ASSET_OBJECT := $(BUILD)/generated_assets.o
 TLS_LIB := third_party/bearssl/build/libbearssl-freestanding.a
 DILLO_DIR := third_party/dillo
 FLTK_CONFIG ?= fltk-config
@@ -35,7 +37,7 @@ LDFLAGS := -nostdlib -z max-page-size=0x1000 -z noexecstack -T linker.ld
 C_SOURCES := kernel/kernel.c kernel/serial.c kernel/vga.c kernel/framebuffer.c kernel/gui.c kernel/apps/shell.c kernel/apps/calculator.c kernel/apps/files.c kernel/apps/snake.c kernel/apps/minesweeper.c kernel/apps/tetris.c kernel/apps/pong.c kernel/mouse.c kernel/interrupts.c kernel/memory.c kernel/pic.c kernel/timer.c kernel/keyboard.c kernel/scheduler.c kernel/process.c kernel/syscall.c kernel/socket.c kernel/vm.c kernel/elf.c kernel/fs.c kernel/ata.c kernel/e1000.c kernel/network.c kernel/linux_compat.c kernel/entropy.c kernel/tls.c
 ASM_SOURCES := boot/boot.S kernel/idt.S kernel/context.S
 CXX_SOURCES := kernel/cxx_runtime.cpp kernel/dillo_platform.cpp
-OBJECTS := $(C_SOURCES:%.c=$(BUILD)/%.o) $(CXX_SOURCES:%.cpp=$(BUILD)/%.o) $(ASM_SOURCES:%.S=$(BUILD)/%.o) $(USER_BINARY_OBJ)
+OBJECTS := $(C_SOURCES:%.c=$(BUILD)/%.o) $(CXX_SOURCES:%.cpp=$(BUILD)/%.o) $(ASM_SOURCES:%.S=$(BUILD)/%.o) $(USER_BINARY_OBJ) $(ASSET_OBJECT)
 
 .PHONY: all kernel iso limbo run run-gui run-vnc stop-vnc debug test bearssl dillo-port cxx-runtime-test dillo-platform-test clean
 
@@ -62,6 +64,13 @@ $(BUILD)/%.o: %.S
 $(BUILD)/%.o: %.cpp
 	@mkdir -p $(@D)
 	$(CXX) $(CXXFLAGS) -c $< -o $@
+
+$(ASSET_SOURCE): Images/FundoIcon.png Images/ShellIcon.png tools/generate_assets.py
+	@mkdir -p $(@D)
+	python3 tools/generate_assets.py Images/FundoIcon.png Images/ShellIcon.png $@
+
+$(ASSET_OBJECT): $(ASSET_SOURCE)
+	$(CC) $(CFLAGS) -c $< -o $@
 
 $(BUILD)/kernel/cxx_runtime.o: kernel/cxx_runtime.cpp kernel/include/acorn/memory.h
 

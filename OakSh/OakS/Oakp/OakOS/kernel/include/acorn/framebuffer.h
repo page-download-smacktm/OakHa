@@ -9,6 +9,10 @@ void framebuffer_init(unsigned long multiboot_info);
 int framebuffer_available(void);
 unsigned int framebuffer_width(void);
 unsigned int framebuffer_height(void);
+void framebuffer_draw_image(unsigned int x, unsigned int y,
+    unsigned int target_width, unsigned int target_height,
+    unsigned int source_width, unsigned int source_height,
+    const unsigned char *pixels, const unsigned char *alpha);
 void framebuffer_clear(unsigned int color);
 void framebuffer_fill_rect(unsigned int x, unsigned int y,
     unsigned int width, unsigned int height, unsigned int color);
