@@ -31,12 +31,17 @@ static char shifted_value(unsigned char scancode, char value)
     case 0x0B: return ')';
     case 0x0C: return '_';
     case 0x0D: return '+';
+    case 0x0E: return '{';
+    case 0x0F: return '}';
     case 0x1A: return '{';
     case 0x1B: return '}';
     case 0x27: return ':';
     case 0x28: return '"';
     case 0x29: return '~';
     case 0x2B: return '|';
+    case 0x2C: return '<';
+    case 0x2D: return '>';
+    case 0x2E: return '?';
     case 0x33: return '<';
     case 0x34: return '>';
     case 0x35: return '?';

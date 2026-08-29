@@ -35,20 +35,201 @@ static int cursor_visible;
 static unsigned char previous_mouse_buttons;
 static char raw_history[18][80];
 static unsigned int raw_history_length;
+static unsigned int gui_apps;
+static unsigned int gui_open_tabs;
+static int gui_window_maximized;
+static int gui_window_minimized;
+static unsigned int gui_current_app;
+static char gui_egna_title[32];
+static char gui_egna_path[64];
 
 enum { GUI_DESKTOP, GUI_FILES, GUI_SNAKE, GUI_TERMINAL, GUI_FULLSCREEN_SNAKE,
     GUI_FULLSCREEN_MINESWEEPER, GUI_FULLSCREEN_TETRIS, GUI_FULLSCREEN_PONG };
 enum { KEY_F1 = 0x80, KEY_F2, KEY_F3 };
+enum { APP_SNAKE = 1, APP_MINESWEEPER = 2, APP_TETRIS = 4, APP_PONG = 8, APP_EGNA = 16 };
 
 static void draw_cursor(void);
+static void draw_desktop(void);
+static void draw_window_chrome(const char *title);
+static void draw_active_cursor(void);
+static void draw_taskbar(void);
+static void enter_fullscreen_snake(void);
+static void enter_fullscreen_minesweeper(void);
+static void enter_fullscreen_tetris(void);
+static void enter_fullscreen_pong(void);
+
+static unsigned int app_bit(const char *name)
+{
+    if (name == (const char *)0 || name[0] == '\0') return 0;
+    if (name[0] == 's') return APP_SNAKE;
+    if (name[0] == 'm') return APP_MINESWEEPER;
+    if (name[0] == 't') return APP_TETRIS;
+    if (name[0] == 'e' || name[0] == 'E') return APP_EGNA;
+    return APP_PONG;
+}
+
+static void register_egna_app(const char *name, const char *path)
+{
+    unsigned int index = 0;
+    if (name != (const char *)0) {
+        while (name[index] != '\0' && index + 1 < sizeof(gui_egna_title)) ++index;
+        for (unsigned int character = 0; character < index; ++character)
+            gui_egna_title[character] = name[character];
+        gui_egna_title[index] = '\0';
+    }
+    if (path != (const char *)0) {
+        unsigned int length = 0;
+        while (path[length] != '\0' && length + 1 < sizeof(gui_egna_path)) ++length;
+        for (unsigned int character = 0; character < length; ++character)
+            gui_egna_path[character] = path[character];
+        gui_egna_path[length] = '\0';
+    }
+    gui_apps |= APP_EGNA;
+}
+
+static void add_gui_app(const char *name)
+{
+    if (name == (const char *)0 || name[0] == '\0') return;
+    if (name[0] == 'e' || name[0] == 'E' || name[0] == '/' ||
+        (name[0] != 's' && name[0] != 'm' && name[0] != 't' &&
+        name[0] != 'p' && name[0] != 'P')) {
+        register_egna_app(name, name);
+        return;
+    }
+    gui_apps |= app_bit(name);
+}
+
+static void launch_gui_app(const char *name)
+{
+    unsigned int bit = app_bit(name);
+    add_gui_app(name);
+    gui_current_app = bit;
+    gui_open_tabs |= gui_current_app;
+    gui_window_minimized = 0;
+    if (bit == APP_EGNA) {
+        register_egna_app(name, name);
+        gui_mode = GUI_DESKTOP;
+        draw_desktop();
+        return;
+    }
+    if (name[0] == 's') enter_fullscreen_snake();
+    else if (name[0] == 'm') enter_fullscreen_minesweeper();
+    else if (name[0] == 't') enter_fullscreen_tetris();
+    else enter_fullscreen_pong();
+}
+
+static void open_gui_app(const char *name)
+{
+    unsigned int bit = app_bit(name);
+    gui_current_app = bit;
+    gui_open_tabs |= gui_current_app;
+    gui_window_minimized = 0;
+    if (bit == APP_EGNA) {
+        register_egna_app(name, name);
+        gui_mode = GUI_DESKTOP;
+        draw_desktop();
+        return;
+    }
+    if (name[0] == 's') {
+        enter_fullscreen_snake();
+        return;
+    }
+    launch_gui_app(name);
+}
+
+static void restore_gui_app(void)
+{
+    gui_window_minimized = 0;
+    if (gui_current_app == APP_SNAKE) {
+        gui_mode = GUI_FULLSCREEN_SNAKE;
+        snake_app_draw_fullscreen();
+        draw_window_chrome("SNAKE");
+        return;
+    }
+    if (gui_current_app == APP_MINESWEEPER) {
+        gui_mode = GUI_FULLSCREEN_MINESWEEPER;
+        minesweeper_app_draw_fullscreen();
+        draw_window_chrome("MINESWEEPER");
+        draw_active_cursor();
+        return;
+    }
+    if (gui_current_app == APP_TETRIS) {
+        gui_mode = GUI_FULLSCREEN_TETRIS;
+        tetris_app_draw_fullscreen();
+        draw_window_chrome("TETRIS");
+        return;
+    }
+    if (gui_current_app == APP_PONG) {
+        gui_mode = GUI_FULLSCREEN_PONG;
+        pong_app_draw_fullscreen();
+        draw_window_chrome("PONG");
+        return;
+    }
+    gui_mode = GUI_DESKTOP;
+    draw_desktop();
+}
+
+static void draw_active_cursor(void)
+{
+    cursor_visible = 0;
+    draw_cursor();
+}
+
+static void draw_window_chrome(const char *title)
+{
+    unsigned int width = framebuffer_width();
+    unsigned int button_y = 6;
+    framebuffer_fill_rect(0, 0, width, 32, COLOR_BAR);
+    framebuffer_draw_text(14, 10, title, COLOR_TEXT, 1);
+    framebuffer_fill_rect(width - 48, button_y, 20, 20, COLOR_TITLE);
+    framebuffer_fill_rect(width - 24, button_y, 20, 20, 0xB84A4A);
+    framebuffer_draw_text(width - 42, 12, "_", COLOR_TEXT, 1);
+    framebuffer_draw_text(width - 18, 11, "X", COLOR_TEXT, 1);
+    draw_taskbar();
+}
+
+static void draw_taskbar(void)
+{
+    unsigned int y = framebuffer_height() - 30;
+    unsigned int x = 318;
+    framebuffer_fill_rect(0, y, framebuffer_width(), 30, COLOR_BAR);
+    framebuffer_draw_text(18, y + 10, "OAK", COLOR_TEXT, 1);
+    if (gui_open_tabs & APP_SNAKE) {
+        unsigned int width = 74;
+        framebuffer_fill_rect(x, y + 4, width, 22,
+            gui_current_app == APP_SNAKE ? COLOR_TITLE : 0x234B3D);
+        framebuffer_draw_text(x + 10, y + 11, "SNAKE", COLOR_TEXT, 1);
+        x += width + 4;
+    }
+    if (gui_open_tabs & APP_MINESWEEPER) {
+        unsigned int width = 112;
+        framebuffer_fill_rect(x, y + 4, width, 22,
+            gui_current_app == APP_MINESWEEPER ? COLOR_TITLE : 0x234B3D);
+        framebuffer_draw_text(x + 10, y + 11, "MINESWEEPER", COLOR_TEXT, 1);
+        x += width + 4;
+    }
+    if (gui_open_tabs & APP_TETRIS) {
+        unsigned int width = 74;
+        framebuffer_fill_rect(x, y + 4, width, 22,
+            gui_current_app == APP_TETRIS ? COLOR_TITLE : 0x234B3D);
+        framebuffer_draw_text(x + 10, y + 11, "TETRIS", COLOR_TEXT, 1);
+        x += width + 4;
+    }
+    if (gui_open_tabs & APP_PONG) {
+        unsigned int width = 66;
+        framebuffer_fill_rect(x, y + 4, width, 22,
+            gui_current_app == APP_PONG ? COLOR_TITLE : 0x234B3D);
+        framebuffer_draw_text(x + 10, y + 11, "PONG", COLOR_TEXT, 1);
+    }
+}
 
 static const char cursor_shape[18][18] = {
     "    B            ", "    BB           ", "    BWB          ",
     "    BWWB         ", "    BWWWB        ", "    BWWWWB       ",
     "    BWWWWWB      ", "    BWWWWWWB     ", "    BWWWWWWWB    ",
-    "    BWWWWWWWWB   ", "    BWWWWWWWWWB  ", "    BWWWWWBBBBBB ",
-    "    BWWBWWB      ", "    BWBWWB       ", "    BB           ",
-    "                 ", "                 ", "                 "
+    "    BWWWWWWWWB   ", "    BWWWWWWWWWB  ", "    BWWWWWWWWWWB ",
+    "    BWWWWWWBBB   ", "    BWWWBB       ", "    BWWB         ",
+    "    BB           ", "                 ", "                 "
 };
 
 static void reset_apps(void)
@@ -75,39 +256,58 @@ static void enter_terminal(void)
 static void enter_fullscreen_snake(void)
 {
     gui_mode = GUI_FULLSCREEN_SNAKE;
+    gui_current_app = APP_SNAKE;
+    gui_window_minimized = 0;
     snake_app_init();
     dillo_platform_clear_events();
     cursor_visible = 0;
     snake_app_draw_fullscreen();
+    draw_window_chrome("SNAKE");
+    draw_taskbar();
+    draw_active_cursor();
 }
 
 static void enter_fullscreen_minesweeper(void)
 {
     gui_mode = GUI_FULLSCREEN_MINESWEEPER;
+    gui_current_app = APP_MINESWEEPER;
+    gui_window_minimized = 0;
     minesweeper_app_init();
     dillo_platform_clear_events();
     cursor_visible = 0;
     previous_mouse_buttons = 0;
     minesweeper_app_draw_fullscreen();
-    draw_cursor();
+    draw_window_chrome("MINESWEEPER");
+    draw_taskbar();
+    draw_active_cursor();
 }
 
 static void enter_fullscreen_tetris(void)
 {
     gui_mode = GUI_FULLSCREEN_TETRIS;
+    gui_current_app = APP_TETRIS;
+    gui_window_minimized = 0;
     tetris_app_init();
     dillo_platform_clear_events();
     cursor_visible = 0;
     tetris_app_draw_fullscreen();
+    draw_window_chrome("TETRIS");
+    draw_taskbar();
+    draw_active_cursor();
 }
 
 static void enter_fullscreen_pong(void)
 {
     gui_mode = GUI_FULLSCREEN_PONG;
+    gui_current_app = APP_PONG;
+    gui_window_minimized = 0;
     pong_app_init();
     dillo_platform_clear_events();
     cursor_visible = 0;
     pong_app_draw_fullscreen();
+    draw_window_chrome("PONG");
+    draw_taskbar();
+    draw_active_cursor();
 }
 
 static void raw_history_add(const char *text)
@@ -204,15 +404,46 @@ static void draw_desktop(void)
     framebuffer_draw_text(48, 174, "TERMINAL", COLOR_TEXT, 2);
     framebuffer_draw_text(48, 208, "SETTINGS", COLOR_TEXT, 2);
     framebuffer_fill_rect(42, 246, 56, 42, COLOR_TITLE);
-    framebuffer_fill_rect(182, 246, 56, 42, COLOR_TITLE);
     framebuffer_draw_image(42, 246, 56, 42, 56, 42,
         oakos_shell_icon_pixels, oakos_shell_icon_alpha);
-    framebuffer_draw_text(190, 258, "F3", COLOR_TEXT, 1);
     framebuffer_draw_text(40, 300, "APPS", COLOR_CURSOR, 1);
+    if (gui_apps & APP_SNAKE) {
+        framebuffer_draw_image(42, 320, 56, 42, 56, 42,
+            oakos_snake_icon_pixels, oakos_snake_icon_alpha);
+        framebuffer_draw_text(42, 370, "SNAKE", COLOR_TEXT, 1);
+    }
+    if (gui_apps & APP_MINESWEEPER) {
+        framebuffer_draw_image(112, 320, 56, 42, 56, 42,
+            oakos_minesweeper_icon_pixels, oakos_minesweeper_icon_alpha);
+        framebuffer_draw_text(112, 370, "MINES", COLOR_TEXT, 1);
+    }
+    if (gui_apps & APP_TETRIS) {
+        framebuffer_draw_image(182, 320, 56, 42, 56, 42,
+            oakos_tetris_icon_pixels, oakos_tetris_icon_alpha);
+        framebuffer_draw_text(182, 370, "TETRIS", COLOR_TEXT, 1);
+    }
+    if (gui_apps & APP_PONG) {
+        framebuffer_draw_image(42, 398, 56, 42, 56, 42,
+            oakos_pong_icon_pixels, oakos_pong_icon_alpha);
+        framebuffer_draw_text(42, 448, "PONG", COLOR_TEXT, 1);
+    }
+    if (gui_apps & APP_EGNA) {
+        framebuffer_fill_rect(182, 398, 56, 42, COLOR_TITLE);
+        framebuffer_draw_text(188, 448, gui_egna_title[0] != '\0' ? gui_egna_title : "EGNA", COLOR_TEXT, 1);
+    }
     if (gui_mode != GUI_DESKTOP)
         framebuffer_fill_rect(318, 78, 410, 76, COLOR_TITLE);
     if (gui_mode == GUI_FILES) files_app_draw();
-    if (gui_mode == GUI_SNAKE) snake_app_draw();
+    if (gui_mode == GUI_SNAKE && !gui_window_minimized) {
+        snake_app_draw();
+        framebuffer_fill_rect(618, 184, 24, 20, COLOR_TITLE);
+        framebuffer_fill_rect(650, 184, 24, 20, COLOR_TITLE);
+        framebuffer_fill_rect(682, 184, 24, 20, 0xB84A4A);
+        framebuffer_draw_text(626, 190, "_", COLOR_TEXT, 1);
+        framebuffer_draw_text(658, 189, "[]", COLOR_TEXT, 1);
+        framebuffer_draw_text(690, 189, "X", COLOR_TEXT, 1);
+    }
+    draw_taskbar();
     draw_cursor();
 }
 
@@ -224,6 +455,11 @@ void gui_init(void)
     shell_init(terminal_line, sizeof(terminal_line), terminal_output,
         sizeof(terminal_output), &terminal_length);
     gui_mode = GUI_DESKTOP;
+    gui_apps = 0;
+    gui_open_tabs = 0;
+    gui_window_maximized = 0;
+    gui_window_minimized = 0;
+    gui_current_app = 0;
     snake_app_init();
     gui_ticks = 0;
     last_mouse_packets = 0;
@@ -257,11 +493,12 @@ void gui_keyboard_input(int value)
                 gui_mode = GUI_DESKTOP;
                 reset_apps();
                 draw_desktop();
+            } else if (command_mode == SHELL_SHOW_GUI) {
+                add_gui_app(shell_requested_app());
+                gui_mode = GUI_DESKTOP;
+                draw_desktop();
             } else if (command_mode == SHELL_RUN_APP) {
-                if (shell_requested_app()[0] == 's') enter_fullscreen_snake();
-                else if (shell_requested_app()[0] == 't') enter_fullscreen_tetris();
-                else if (shell_requested_app()[0] == 'p') enter_fullscreen_pong();
-                else enter_fullscreen_minesweeper();
+                launch_gui_app(shell_requested_app());
             } else {
                 raw_history_add(command_text);
                 raw_history_add(terminal_output);
@@ -281,6 +518,8 @@ void gui_keyboard_input(int value)
         }
         snake_app_key(value);
         snake_app_draw_fullscreen();
+        draw_window_chrome("SNAKE");
+        draw_active_cursor();
         return;
     }
     if (gui_mode == GUI_FULLSCREEN_MINESWEEPER) {
@@ -291,7 +530,8 @@ void gui_keyboard_input(int value)
         }
         minesweeper_app_key(value);
         minesweeper_app_draw_fullscreen();
-        draw_cursor();
+        draw_window_chrome("MINESWEEPER");
+        draw_active_cursor();
         return;
     }
     if (gui_mode == GUI_FULLSCREEN_TETRIS) {
@@ -302,6 +542,8 @@ void gui_keyboard_input(int value)
         }
         tetris_app_key(value);
         tetris_app_draw_fullscreen();
+        draw_window_chrome("TETRIS");
+        draw_active_cursor();
         return;
     }
     if (gui_mode == GUI_FULLSCREEN_PONG) {
@@ -312,6 +554,8 @@ void gui_keyboard_input(int value)
         }
         pong_app_key(value);
         pong_app_draw_fullscreen();
+        draw_window_chrome("PONG");
+        draw_active_cursor();
         return;
     }
     if (value == KEY_F1) {
@@ -319,10 +563,8 @@ void gui_keyboard_input(int value)
         return;
     }
     if (value == KEY_F3) {
-        gui_mode = GUI_SNAKE;
-        snake_app_init();
+        enter_fullscreen_snake();
         text_copy(terminal_output, "snake: WASD move, Q quit");
-        draw_desktop();
         return;
     }
     if (value == 0x1B) {
@@ -342,10 +584,10 @@ void gui_keyboard_input(int value)
         sizeof(terminal_line), &terminal_length, terminal_output,
         sizeof(terminal_output));
     if (command_mode == SHELL_RUN_APP) {
-        if (shell_requested_app()[0] == 's') enter_fullscreen_snake();
-        else if (shell_requested_app()[0] == 't') enter_fullscreen_tetris();
-        else if (shell_requested_app()[0] == 'p') enter_fullscreen_pong();
-        else enter_fullscreen_minesweeper();
+        launch_gui_app(shell_requested_app());
+    } else if (command_mode == SHELL_SHOW_GUI) {
+        add_gui_app(shell_requested_app());
+        gui_mode = GUI_DESKTOP;
     } else if (command_mode >= GUI_DESKTOP && command_mode <= GUI_SNAKE) {
         gui_mode = command_mode;
         if (gui_mode == GUI_SNAKE) snake_app_init();
@@ -358,8 +600,118 @@ void gui_mouse_input(int x, int y, unsigned char buttons)
 {
     dillo_platform_push_mouse(x, y, buttons);
     if (gui_mode == GUI_TERMINAL) return;
-    if (gui_mode == GUI_FULLSCREEN_TETRIS) return;
-    if (gui_mode == GUI_FULLSCREEN_PONG) return;
+    if (gui_window_minimized) {
+        if ((buttons & 1) != 0 && y >= (int)framebuffer_height() - 30) {
+            unsigned int tab_x = 318;
+            if (gui_open_tabs & APP_SNAKE) {
+                if (x >= (int)tab_x && x < (int)tab_x + 74) { gui_current_app = APP_SNAKE; restore_gui_app(); return; }
+                tab_x += 78;
+            }
+            if (gui_open_tabs & APP_MINESWEEPER) {
+                if (x >= (int)tab_x && x < (int)tab_x + 112) { gui_current_app = APP_MINESWEEPER; restore_gui_app(); return; }
+                tab_x += 116;
+            }
+            if (gui_open_tabs & APP_TETRIS) {
+                if (x >= (int)tab_x && x < (int)tab_x + 74) { gui_current_app = APP_TETRIS; restore_gui_app(); return; }
+                tab_x += 78;
+            }
+            if (gui_open_tabs & APP_PONG) {
+                if (x >= (int)tab_x && x < (int)tab_x + 66) { gui_current_app = APP_PONG; restore_gui_app(); return; }
+            }
+            previous_mouse_buttons = 0;
+            return;
+        }
+        if ((buttons & 1) != 0 && y >= 320 && y < 362) {
+            if ((gui_apps & APP_SNAKE) && x >= 42 && x < 98) { open_gui_app("snake"); return; }
+            if ((gui_apps & APP_MINESWEEPER) && x >= 112 && x < 168) { open_gui_app("minesweeper"); return; }
+            if ((gui_apps & APP_TETRIS) && x >= 182 && x < 238) { open_gui_app("tetris"); return; }
+        }
+        if ((buttons & 1) != 0 && y >= 398 && y < 440 && (gui_apps & APP_PONG) && x >= 42 && x < 98) {
+            open_gui_app("pong");
+            return;
+        }
+        if ((buttons & 1) != 0 && y < 246 && y > 288) {
+            if (x >= 42 && x < 98) {
+                enter_terminal();
+                return;
+            }
+        }
+        return;
+    }
+    if ((gui_mode == GUI_FULLSCREEN_SNAKE ||
+        gui_mode == GUI_FULLSCREEN_MINESWEEPER ||
+        gui_mode == GUI_FULLSCREEN_TETRIS || gui_mode == GUI_FULLSCREEN_PONG) &&
+        (buttons & 1) != 0) {
+        if (y >= (int)framebuffer_height() - 30) {
+            unsigned int tab_x = 318;
+            if (gui_open_tabs & APP_SNAKE) {
+                if (x >= (int)tab_x && x < (int)tab_x + 74) { gui_current_app = APP_SNAKE; restore_gui_app(); return; }
+                tab_x += 78;
+            }
+            if (gui_open_tabs & APP_MINESWEEPER) {
+                if (x >= (int)tab_x && x < (int)tab_x + 112) { gui_current_app = APP_MINESWEEPER; restore_gui_app(); return; }
+                tab_x += 116;
+            }
+            if (gui_open_tabs & APP_TETRIS) {
+                if (x >= (int)tab_x && x < (int)tab_x + 74) { gui_current_app = APP_TETRIS; restore_gui_app(); return; }
+                tab_x += 78;
+            }
+            if (gui_open_tabs & APP_PONG) {
+                if (x >= (int)tab_x && x < (int)tab_x + 66) { gui_current_app = APP_PONG; restore_gui_app(); return; }
+            }
+        }
+        if (y < 32) {
+            if (x >= (int)framebuffer_width() - 24) {
+                if (gui_current_app != 0) gui_open_tabs &= ~gui_current_app;
+                gui_current_app = 0;
+                if (gui_open_tabs & APP_SNAKE) gui_current_app = APP_SNAKE;
+                else if (gui_open_tabs & APP_MINESWEEPER) gui_current_app = APP_MINESWEEPER;
+                else if (gui_open_tabs & APP_TETRIS) gui_current_app = APP_TETRIS;
+                else if (gui_open_tabs & APP_PONG) gui_current_app = APP_PONG;
+                gui_mode = GUI_DESKTOP;
+                gui_window_minimized = 0;
+                draw_desktop();
+                return;
+            }
+            if (x >= (int)framebuffer_width() - 48 &&
+                x < (int)framebuffer_width() - 24) {
+                gui_window_minimized = 1;
+                draw_desktop();
+                return;
+            }
+        }
+    }
+    if (gui_mode == GUI_SNAKE && (buttons & 1) != 0 && y >= 184 && y < 204) {
+        if (x >= 682 && x < 706) {
+            if (gui_current_app != 0) gui_open_tabs &= ~gui_current_app;
+            gui_current_app = 0;
+            if (gui_open_tabs & APP_SNAKE) gui_current_app = APP_SNAKE;
+            else if (gui_open_tabs & APP_MINESWEEPER) gui_current_app = APP_MINESWEEPER;
+            else if (gui_open_tabs & APP_TETRIS) gui_current_app = APP_TETRIS;
+            else if (gui_open_tabs & APP_PONG) gui_current_app = APP_PONG;
+            gui_mode = GUI_DESKTOP;
+            gui_window_minimized = 0;
+        } else if (x >= 618 && x < 642) {
+            gui_window_minimized = 1;
+        } else return;
+        draw_desktop();
+        return;
+    }
+    if ((gui_apps & APP_EGNA) && y >= 398 && y < 440 && x >= 182 && x < 238) {
+        if (gui_egna_path[0] != '\0') {
+            if (framebuffer_available()) shell_set_output(terminal_output, sizeof(terminal_output), "EGNA launched");
+            gui_current_app = APP_EGNA;
+            gui_open_tabs |= APP_EGNA;
+            gui_window_minimized = 0;
+            gui_mode = GUI_DESKTOP;
+            draw_desktop();
+        }
+        return;
+    }
+    if (gui_mode == GUI_FULLSCREEN_TETRIS || gui_mode == GUI_FULLSCREEN_PONG) {
+        if (mouse_moved() && !gui_window_minimized) draw_active_cursor();
+        return;
+    }
     if (gui_mode == GUI_FULLSCREEN_MINESWEEPER) {
         minesweeper_app_mouse(x, y, buttons, previous_mouse_buttons);
         previous_mouse_buttons = buttons;
@@ -381,15 +733,41 @@ void gui_mouse_input(int x, int y, unsigned char buttons)
         return;
     }
     if (gui_mode != GUI_DESKTOP) return;
+    if (y >= (int)framebuffer_height() - 30) {
+        unsigned int tab_x = 318;
+        if (gui_open_tabs & APP_SNAKE) {
+            if (x >= (int)tab_x && x < (int)tab_x + 74) { gui_current_app = APP_SNAKE; restore_gui_app(); return; }
+            tab_x += 78;
+        }
+        if (gui_open_tabs & APP_MINESWEEPER) {
+            if (x >= (int)tab_x && x < (int)tab_x + 112) { gui_current_app = APP_MINESWEEPER; restore_gui_app(); return; }
+            tab_x += 116;
+        }
+        if (gui_open_tabs & APP_TETRIS) {
+            if (x >= (int)tab_x && x < (int)tab_x + 74) { gui_current_app = APP_TETRIS; restore_gui_app(); return; }
+            tab_x += 78;
+        }
+        if (gui_open_tabs & APP_PONG) {
+            if (x >= (int)tab_x && x < (int)tab_x + 66) { gui_current_app = APP_PONG; restore_gui_app(); return; }
+        }
+        return;
+    }
+    if (y >= 320 && y < 362) {
+        if ((gui_apps & APP_SNAKE) && x >= 42 && x < 98) { open_gui_app("snake"); return; }
+        if ((gui_apps & APP_MINESWEEPER) && x >= 112 && x < 168) { open_gui_app("minesweeper"); return; }
+        if ((gui_apps & APP_TETRIS) && x >= 182 && x < 238) { open_gui_app("tetris"); return; }
+    }
+    if (y >= 398 && y < 440 && (gui_apps & APP_PONG) && x >= 42 && x < 98) {
+        open_gui_app("pong");
+        return;
+    }
     if (y < 246 || y > 288) return;
     if (x >= 42 && x < 98) {
         enter_terminal();
         return;
     }
-    else if (x >= 182 && x < 238) gui_mode = GUI_SNAKE;
     else return;
-    text_copy(terminal_output, gui_mode == GUI_SNAKE ?
-        "snake: WASD move, Q quit" : "shell");
+    text_copy(terminal_output, "shell");
     draw_desktop();
 }
 
@@ -401,37 +779,80 @@ void gui_tick(void)
     if (gui_mode == GUI_FULLSCREEN_SNAKE) {
         if (gui_ticks % 80 == 0) {
             snake_app_tick();
-            snake_app_draw_fullscreen();
+            if (!gui_window_minimized) {
+                snake_app_draw_fullscreen();
+                draw_window_chrome("SNAKE");
+                draw_active_cursor();
+            }
         }
-        if (mouse_moved())
-            dillo_platform_push_mouse(mouse_x(), mouse_y(), mouse_buttons());
+        if (mouse_moved()) {
+            unsigned int old_mode = gui_mode;
+            gui_mouse_input(mouse_x(), mouse_y(), mouse_buttons());
+            if (gui_mode == old_mode) {
+                if (gui_window_minimized) draw_cursor();
+                else draw_active_cursor();
+            }
+        }
         return;
     }
     if (gui_mode == GUI_FULLSCREEN_MINESWEEPER) {
         minesweeper_app_tick();
         if (gui_ticks % 80 == 0) {
-            minesweeper_app_draw_fullscreen();
-            draw_cursor();
+            if (!gui_window_minimized) {
+                minesweeper_app_draw_fullscreen();
+                draw_window_chrome("MINESWEEPER");
+                draw_active_cursor();
+            }
+        }
+        if (mouse_moved()) {
+            unsigned int old_mode = gui_mode;
+            gui_mouse_input(mouse_x(), mouse_y(), mouse_buttons());
+            if (gui_mode == old_mode) {
+                if (gui_window_minimized) draw_cursor();
+                else draw_active_cursor();
+            }
         }
         return;
     }
     if (gui_mode == GUI_FULLSCREEN_TETRIS) {
         tetris_app_tick();
-        if (gui_ticks % 16 == 0) tetris_app_draw_fullscreen();
+        if (gui_ticks % 16 == 0 && !gui_window_minimized) { tetris_app_draw_fullscreen(); draw_window_chrome("TETRIS"); draw_active_cursor(); }
+        if (mouse_moved()) {
+            unsigned int old_mode = gui_mode;
+            gui_mouse_input(mouse_x(), mouse_y(), mouse_buttons());
+            if (gui_mode == old_mode) {
+                if (gui_window_minimized) draw_cursor();
+                else draw_active_cursor();
+            }
+        }
         return;
     }
     if (gui_mode == GUI_FULLSCREEN_PONG) {
         if (gui_ticks % 16 == 0) {
             pong_app_tick();
-            pong_app_draw_fullscreen();
+            if (!gui_window_minimized) {
+                pong_app_draw_fullscreen();
+                draw_window_chrome("PONG");
+                draw_active_cursor();
+            }
+        }
+        if (mouse_moved()) {
+            unsigned int old_mode = gui_mode;
+            gui_mouse_input(mouse_x(), mouse_y(), mouse_buttons());
+            if (gui_mode == old_mode) {
+                if (gui_window_minimized) draw_cursor();
+                else draw_active_cursor();
+            }
         }
         return;
     }
     if (gui_mode == GUI_SNAKE && gui_ticks % 80 == 0) {
-        draw_cursor();
+        if (!gui_window_minimized) draw_cursor();
         snake_app_tick();
-        snake_app_draw_update();
-        draw_cursor();
+        if (!gui_window_minimized) {
+            snake_app_draw_update();
+            draw_cursor();
+        }
     }
     if (mouse_moved()) {
         unsigned int old_mode = gui_mode;

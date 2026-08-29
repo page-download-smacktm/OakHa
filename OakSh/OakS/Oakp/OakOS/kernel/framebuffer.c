@@ -157,10 +157,21 @@ static unsigned char glyph(char value, unsigned int row)
     if (value >= 'a' && value <= 'z') value -= 'a' - 'A';
     if (value >= 'A' && value <= 'Z') return letters[value - 'A'][row];
     if (value == '-') return row == 4 ? 63 : 0;
+    if (value == '.') return row == 7 ? 4 : 0;
     if (value == ':') return row == 2 || row == 6 ? 12 : 0;
-    if (value == '>') return row == 2 || row == 6 ? 48 : (row == 3 || row == 5 ? 24 : 0);
+    if (value == ';') return row == 2 || row == 6 ? 12 : 0;
+    if (value == ',') return row == 7 ? 4 : 0;
     if (value == '/') return row == 1 || row == 2 || row == 4 || row == 5 || row == 7 ? 4 : 0;
+    if (value == '\\') return row == 1 || row == 2 || row == 5 || row == 6 ? 4 : 0;
+    if (value == '_') return row == 8 ? 63 : 0;
+    if (value == '=') return row == 3 || row == 4 || row == 5 ? 63 : 0;
+    if (value == '>') return row == 2 || row == 6 ? 48 : (row == 3 || row == 5 ? 24 : 0);
+    if (value == '<') return row == 2 || row == 6 ? 12 : (row == 3 || row == 5 ? 24 : 0);
     if (value == '*') return row == 2 || row == 6 ? 8 : (row == 3 || row == 4 || row == 5 ? 28 : 0);
+    if (value == '?') return row == 1 || row == 2 || row == 3 || row == 7 ? 30 : 0;
+    if (value == '[' || value == ']') return row == 1 || row == 7 ? 62 : (row == 2 || row == 6 ? 48 : 0);
+    if (value == '(' || value == ')') return row == 2 || row == 6 ? 12 : (row == 3 || row == 5 ? 24 : 0);
+    if (value == '"' || value == '\'') return row == 1 || row == 2 || row == 6 || row == 7 ? 12 : 0;
     if (value == ' ') return 0;
     return row == 4 ? 63 : 0;
 }

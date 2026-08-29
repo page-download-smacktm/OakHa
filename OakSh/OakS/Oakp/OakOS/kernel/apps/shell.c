@@ -1,5 +1,6 @@
 #include "acorn/apps/shell.h"
 #include "acorn/apps/calculator.h"
+#include "acorn/egna.h"
 #include "acorn/fs.h"
 #include "acorn/e1000.h"
 #include "acorn/network.h"
@@ -31,6 +32,19 @@ static int starts_with(const char *text, const char *prefix)
     while (prefix[index] != '\0') {
         if (text[index] != prefix[index]) return 0;
         ++index;
+    }
+    return 1;
+}
+
+static int ends_with(const char *text, const char *suffix)
+{
+    unsigned int text_length = 0;
+    unsigned int suffix_length = 0;
+    while (text[text_length] != '\0') ++text_length;
+    while (suffix[suffix_length] != '\0') ++suffix_length;
+    if (suffix_length > text_length) return 0;
+    for (unsigned int index = 0; index < suffix_length; ++index) {
+        if (text[text_length - suffix_length + index] != suffix[index]) return 0;
     }
     return 1;
 }
@@ -107,35 +121,89 @@ void shell_init(char *line, unsigned int line_size, char *output,
     *length = 0;
 }
 
+static int run_egna_package(const char *path, int show_in_gui,
+    char *output, unsigned int output_size)
+{
+    char full_path[64];
+    char package_name[32];
+    char shell_command[128];
+    struct egna_package package;
+    resolve_path(full_path, sizeof(full_path), path);
+    if (!fs_exists(full_path)) {
+        copy_text(output, output_size, "EGNA: file not found");
+        return 0;
+    }
+    if (!egna_load(full_path, &package)) {
+        copy_text(output, output_size, "EGNA: invalid package");
+        return 0;
+    }
+    if (package.name[0] == '\0') {
+        if (!egna_get_name(full_path, package_name, sizeof(package_name)))
+            copy_text(package_name, sizeof(package_name), "unknown");
+    }
+    if ((package.flags & EGNA_FLAG_GUI_READY) != 0 && show_in_gui) {
+        copy_text(requested_app, sizeof(requested_app), package.name[0] != '\0' ?
+            package.name : path);
+        copy_text(output, output_size, "EGNA: package queued for GUI");
+        return SHELL_SHOW_GUI;
+    }
+    if ((package.flags & EGNA_FLAG_HAS_SHELL) != 0) {
+        egna_get_shell_command(full_path, shell_command, sizeof(shell_command));
+        copy_text(output, output_size, shell_command[0] != '\0' ? shell_command :
+            "EGNA: shell command loaded");
+        return SHELL_RUN_APP;
+    }
+    copy_text(output, output_size, "EGNA: shell-only package");
+    return 0;
+}
+
 static int run_command(const char *line, char *output, unsigned int output_size)
 {
     char result[24];
     char buffer[64];
-    if (starts_with(line, "run ")) {
-        const char *name = line + 4;
+    if (starts_with(line, "run ") || starts_with(line, "show-gui ")) {
+        int show_in_gui = starts_with(line, "show-gui ");
+        const char *name = line + (show_in_gui ? 9 : 4);
+        if (name[0] != '\0' && name[0] != ' ' && name[0] != '\t') {
+            unsigned int length = 0;
+            while (name[length] != '\0' && name[length] != ' ' && name[length] != '\t' &&
+                length + 1 < 64) ++length;
+            char app_name[64];
+            if (length >= sizeof(app_name)) length = sizeof(app_name) - 1;
+            for (unsigned int index = 0; index < length; ++index) app_name[index] = name[index];
+            app_name[length] = '\0';
+            if (ends_with(app_name, ".egna") || starts_with(app_name, "./") ||
+                starts_with(app_name, "/")) {
+                return run_egna_package(app_name, show_in_gui, output, output_size);
+            }
+        }
         if (equals(name, "snake") || equals(name, "snake.elf") ||
             equals(name, "minesweeper") || equals(name, "minesweeper.elf") ||
             equals(name, "tetris") || equals(name, "tetris.elf") ||
             equals(name, "pong") || equals(name, "pong.elf")) {
             if (starts_with(name, "mine")) {
                 copy_text(requested_app, sizeof(requested_app), "minesweeper");
-                copy_text(output, output_size, "starting minesweeper");
+                copy_text(output, output_size, show_in_gui ?
+                    "minesweeper added to GUI" : "starting minesweeper");
             } else if (starts_with(name, "tetris")) {
                 copy_text(requested_app, sizeof(requested_app), "tetris");
-                copy_text(output, output_size, "starting tetris");
+                copy_text(output, output_size, show_in_gui ?
+                    "tetris added to GUI" : "starting tetris");
             } else if (starts_with(name, "pong")) {
                 copy_text(requested_app, sizeof(requested_app), "pong");
-                copy_text(output, output_size, "starting pong");
+                copy_text(output, output_size, show_in_gui ?
+                    "pong added to GUI" : "starting pong");
             } else {
                 copy_text(requested_app, sizeof(requested_app), "snake");
-                copy_text(output, output_size, "starting snake");
+                copy_text(output, output_size, show_in_gui ?
+                    "snake added to GUI" : "starting snake");
             }
-            return SHELL_RUN_APP;
+            return show_in_gui ? SHELL_SHOW_GUI : SHELL_RUN_APP;
         }
         copy_text(output, output_size, "run: application unavailable");
     } else if (equals(line, "help")) {
         copy_text(output, output_size,
-            "help run(snake/minesweeper/tetris/pong) cd ls show mkdir calc net dns tcp http curl browse ret-grafic");
+            "help run(app.egna/snake/minesweeper/tetris/pong) show-gui(app.egna/app) curl -o /file.egna http://host download-egna -o /file.egna http://host cd ls show mkdir calc net dns tcp http curl browse ret-grafic");
     } else if (equals(line, "net")) {
         copy_text(output, output_size,
             e1000_available() ? "network: e1000 ready" : "network: no e1000");
@@ -181,9 +249,21 @@ static int run_command(const char *line, char *output, unsigned int output_size)
                         ++host_length;
                     }
                     host[host_length] = '\0';
-                    copy_text(output, output_size,
-                        download_http_file(file_path, host) ?
-                        "curl: file saved" : "curl: download failed");
+                    if (download_http_file(file_path, host)) {
+                        if (ends_with(file_path, ".egna")) {
+                            char app_name[32];
+                            unsigned int slash = 0;
+                            while (file_path[slash] != '\0') ++slash;
+                            while (slash > 0 && file_path[slash - 1] != '/') --slash;
+                            copy_text(app_name, sizeof(app_name), file_path + slash);
+                            copy_text(requested_app, sizeof(requested_app), app_name);
+                            copy_text(output, output_size, "curl: EGNA saved and added to desktop");
+                            return SHELL_SHOW_GUI;
+                        }
+                        copy_text(output, output_size, "curl: file saved");
+                    } else {
+                        copy_text(output, output_size, "curl: download failed");
+                    }
                 }
             } else copy_text(output, output_size, "curl: use -o /file host");
         } else if (starts_with(address, "https://")) {
@@ -201,6 +281,69 @@ static int run_command(const char *line, char *output, unsigned int output_size)
             if (starts_with(address, "http://")) address += 7;
             if (!network_http_get(address, output, output_size))
                 copy_text(output, output_size, "browse: page unavailable");
+        }
+    } else if (starts_with(line, "download-egna ") || starts_with(line, "install-egna ")) {
+        const char *spec = line + (starts_with(line, "download-egna ") ? 15 : 14);
+        char file_path[64];
+        char host[64];
+        unsigned int host_length = 0;
+        if (starts_with(spec, "-o ")) {
+            const char *path = spec + 3;
+            unsigned int path_length = 0;
+            while (path[path_length] != ' ' && path[path_length] != '\0') ++path_length;
+            if (path[path_length] == ' ') {
+                const char *url = path + path_length + 1;
+                for (unsigned int index = 0; index < path_length && index + 1 < sizeof(file_path); ++index)
+                    file_path[index] = path[index];
+                file_path[path_length] = '\0';
+                if (starts_with(url, "https://")) {
+                    copy_text(output, output_size, "download-egna: https unavailable");
+                } else {
+                    if (starts_with(url, "http://")) url += 7;
+                    while (url[host_length] != '\0' && host_length + 1 < sizeof(host) &&
+                        url[host_length] != '/' && url[host_length] != ' ') {
+                        host[host_length] = url[host_length];
+                        ++host_length;
+                    }
+                    host[host_length] = '\0';
+                    if (download_http_file(file_path, host)) {
+                        char app_name[32];
+                        unsigned int slash = 0;
+                        while (file_path[slash] != '\0') ++slash;
+                        while (slash > 0 && file_path[slash - 1] != '/') --slash;
+                        copy_text(app_name, sizeof(app_name), file_path + slash);
+                        copy_text(requested_app, sizeof(requested_app), app_name);
+                        copy_text(output, output_size, "EGNA downloaded and added to desktop");
+                        return SHELL_SHOW_GUI;
+                    }
+                    copy_text(output, output_size, "download-egna: failed");
+                }
+            } else copy_text(output, output_size, "download-egna: use -o /path file.egna http://host");
+        } else {
+            const char *url = spec;
+            char target_name[32];
+            unsigned int target_length = 0;
+            while (url[target_length] != ' ' && url[target_length] != '\0') ++target_length;
+            if (url[target_length] == ' ') {
+                for (unsigned int index = 0; index < target_length && index + 1 < sizeof(target_name); ++index)
+                    target_name[index] = url[index];
+                target_name[target_length] = '\0';
+                copy_text(file_path, sizeof(file_path), "/");
+                if (target_length > 0) {
+                    copy_text(file_path + 1, sizeof(file_path) - 1, target_name);
+                }
+                if (download_http_file(file_path, target_name)) {
+                    char app_name[32];
+                    unsigned int slash = 0;
+                    while (file_path[slash] != '\0') ++slash;
+                    while (slash > 0 && file_path[slash - 1] != '/') --slash;
+                    copy_text(app_name, sizeof(app_name), file_path + slash);
+                    copy_text(requested_app, sizeof(requested_app), app_name);
+                    copy_text(output, output_size, "EGNA downloaded and added to desktop");
+                    return SHELL_SHOW_GUI;
+                }
+                copy_text(output, output_size, "download-egna: failed");
+            } else copy_text(output, output_size, "download-egna: needs URL and target");
         }
     } else if (equals(line, "ret-grafic")) {
         copy_text(output, output_size, "returning to graphics");

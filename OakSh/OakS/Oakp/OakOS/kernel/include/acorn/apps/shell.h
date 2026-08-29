@@ -3,6 +3,7 @@
 
 #define SHELL_RETURN_GRAPHIC (-2)
 #define SHELL_RUN_APP (-3)
+#define SHELL_SHOW_GUI (-4)
 
 void shell_init(char *line, unsigned int line_size, char *output,
     unsigned int output_size, unsigned int *length);

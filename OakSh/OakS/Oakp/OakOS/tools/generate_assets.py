@@ -2,6 +2,7 @@
 import struct
 import sys
 import zlib
+import os
 
 
 def read_png(path):
@@ -85,14 +86,16 @@ def write_array(output, name, rows):
 
 
 def main():
-    if len(sys.argv) != 4:
-        raise SystemExit("uso: generate_assets.py fundo.png shell.png saida.c")
-    background = resize(*read_png(sys.argv[1]), 652, 432)
-    shell = resize(*read_png(sys.argv[2]), 56, 42)
-    with open(sys.argv[3], "w") as output:
+    if len(sys.argv) < 3:
+        raise SystemExit("uso: generate_assets.py nome.png ... saida.c")
+    with open(sys.argv[-1], "w") as output:
         output.write('#include "acorn/assets.h"\n\n')
-        write_array(output, "oakos_background", background)
-        write_array(output, "oakos_shell_icon", shell)
+        for path in sys.argv[1:-1]:
+            name = os.path.splitext(os.path.basename(path))[0].lower()
+            rows = read_png(path)
+            if name == "fundoicon": rows = resize(*rows, 652, 432)
+            else: rows = resize(*rows, 56, 42)
+            write_array(output, "oakos_" + ("background" if name == "fundoicon" else name.replace("icon", "_icon")), rows)
 
 
 if __name__ == "__main__":
