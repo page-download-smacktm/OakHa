@@ -36,6 +36,13 @@ static int starts_with(const char *text, const char *prefix)
     return 1;
 }
 
+static const char *strip_url_scheme(const char *url)
+{
+    if (starts_with(url, "https://")) return url + 8;
+    if (starts_with(url, "http://")) return url + 7;
+    return url;
+}
+
 static int ends_with(const char *text, const char *suffix)
 {
     unsigned int text_length = 0;
@@ -54,12 +61,13 @@ static char previous_directory[33] = "/";
 static char download_buffer[1024];
 static char requested_app[33];
 
-static int download_http_file(const char *path, const char *host)
+static int download_http_file(const char *path, const char *url)
 {
     char *body = download_buffer;
     long response_length = 0;
     unsigned int index;
-    if (!network_http_get(host, download_buffer, sizeof(download_buffer))) return 0;
+    if (url == (const char *)0 || !network_http_get(url, download_buffer, sizeof(download_buffer)))
+        return 0;
     while (response_length < (long)sizeof(download_buffer) &&
         download_buffer[response_length] != '\0') ++response_length;
     for (index = 0; index + 3 < (unsigned int)response_length; ++index) {
@@ -203,7 +211,7 @@ static int run_command(const char *line, char *output, unsigned int output_size)
         copy_text(output, output_size, "run: application unavailable");
     } else if (equals(line, "help")) {
         copy_text(output, output_size,
-            "help run(app.egna/snake/minesweeper/tetris/pong) show-gui(app.egna/app) curl -o /file.egna http://host download-egna -o /file.egna http://host cd ls show mkdir calc net dns tcp http curl browse ret-grafic");
+            "help: run(app.egna/snake/minesweeper/tetris/pong)\nExamples:\n  curl -o /space-invaders.egna http://HOST:PORT/space-invaders.egna\n  download-egna -o /space-invaders.egna http://HOST:PORT/space-invaders.egna\nOther: cd ls mkdir calc net dns tcp http curl browse ret-grafic");
     } else if (equals(line, "net")) {
         copy_text(output, output_size,
             e1000_available() ? "network: e1000 ready" : "network: no e1000");
@@ -224,7 +232,7 @@ static int run_command(const char *line, char *output, unsigned int output_size)
             copy_text(output, output_size, "http: request failed");
     } else if (starts_with(line, "curl ")) {
         const char *address = line + 5;
-        if (starts_with(address, "-o ")) {
+        if (starts_with(address, "-o ") || starts_with(address, "-O ")) {
             const char *path = address + 3;
             unsigned int path_length = 0;
             while (path[path_length] != ' ' && path[path_length] != '\0') ++path_length;
@@ -240,16 +248,15 @@ static int run_command(const char *line, char *output, unsigned int output_size)
                     file_path[index] = path[index];
                 file_path[path_length] = '\0';
                 path += path_length + 1;
-                if (starts_with(path, "https://")) {
-                    copy_text(output, output_size, "curl: https unavailable");
-                } else {
-                    if (starts_with(path, "http://")) path += 7;
-                    while (path[host_length] != '\0' && host_length + 1 < sizeof(host)) {
-                        host[host_length] = path[host_length];
+                if (starts_with(path, "https://") || starts_with(path, "http://")) {
+                    const char *url = strip_url_scheme(path);
+                    while (url[host_length] != '\0' && url[host_length] != '/' &&
+                        url[host_length] != ' ' && host_length + 1 < sizeof(host)) {
+                        host[host_length] = url[host_length];
                         ++host_length;
                     }
                     host[host_length] = '\0';
-                    if (download_http_file(file_path, host)) {
+                    if (download_http_file(file_path, path)) {
                         if (ends_with(file_path, ".egna")) {
                             char app_name[32];
                             unsigned int slash = 0;
@@ -265,20 +272,38 @@ static int run_command(const char *line, char *output, unsigned int output_size)
                         copy_text(output, output_size, "curl: download failed");
                     }
                 }
-            } else copy_text(output, output_size, "curl: use -o /file host");
-        } else if (starts_with(address, "https://")) {
-            copy_text(output, output_size, "curl: https unavailable");
+            } else copy_text(output, output_size, "curl: use -o/-O /file http://host/path");
+        } else if (starts_with(address, "https://") || starts_with(address, "http://")) {
+            const char *url = strip_url_scheme(address);
+            char host_only[64];
+            unsigned int host_length = 0;
+            while (url[host_length] != '\0' && url[host_length] != '/' &&
+                url[host_length] != ' ' && host_length + 1 < sizeof(host_only)) {
+                host_only[host_length] = url[host_length];
+                ++host_length;
+            }
+            host_only[host_length] = '\0';
+            if (!network_http_get(host_only, output, output_size))
+                copy_text(output, output_size, "curl: request failed");
         } else {
-            if (starts_with(address, "http://")) address += 7;
             if (!network_http_get(address, output, output_size))
                 copy_text(output, output_size, "curl: request failed");
         }
     } else if (starts_with(line, "browse ")) {
         const char *address = line + 7;
-        if (starts_with(address, "https://")) {
-            copy_text(output, output_size, "browse: https unavailable");
+        if (starts_with(address, "https://") || starts_with(address, "http://")) {
+            const char *url = strip_url_scheme(address);
+            char host_only[64];
+            unsigned int host_length = 0;
+            while (url[host_length] != '\0' && url[host_length] != '/' &&
+                url[host_length] != ' ' && host_length + 1 < sizeof(host_only)) {
+                host_only[host_length] = url[host_length];
+                ++host_length;
+            }
+            host_only[host_length] = '\0';
+            if (!network_http_get(host_only, output, output_size))
+                copy_text(output, output_size, "browse: page unavailable");
         } else {
-            if (starts_with(address, "http://")) address += 7;
             if (!network_http_get(address, output, output_size))
                 copy_text(output, output_size, "browse: page unavailable");
         }
@@ -287,7 +312,7 @@ static int run_command(const char *line, char *output, unsigned int output_size)
         char file_path[64];
         char host[64];
         unsigned int host_length = 0;
-        if (starts_with(spec, "-o ")) {
+        if (starts_with(spec, "-o ") || starts_with(spec, "-O ")) {
             const char *path = spec + 3;
             unsigned int path_length = 0;
             while (path[path_length] != ' ' && path[path_length] != '\0') ++path_length;
@@ -296,17 +321,15 @@ static int run_command(const char *line, char *output, unsigned int output_size)
                 for (unsigned int index = 0; index < path_length && index + 1 < sizeof(file_path); ++index)
                     file_path[index] = path[index];
                 file_path[path_length] = '\0';
-                if (starts_with(url, "https://")) {
-                    copy_text(output, output_size, "download-egna: https unavailable");
-                } else {
-                    if (starts_with(url, "http://")) url += 7;
-                    while (url[host_length] != '\0' && host_length + 1 < sizeof(host) &&
-                        url[host_length] != '/' && url[host_length] != ' ') {
-                        host[host_length] = url[host_length];
+                if (starts_with(url, "https://") || starts_with(url, "http://")) {
+                    const char *scheme_url = strip_url_scheme(url);
+                    while (scheme_url[host_length] != '\0' && scheme_url[host_length] != '/' &&
+                        scheme_url[host_length] != ' ' && host_length + 1 < sizeof(host)) {
+                        host[host_length] = scheme_url[host_length];
                         ++host_length;
                     }
                     host[host_length] = '\0';
-                    if (download_http_file(file_path, host)) {
+                    if (download_http_file(file_path, url)) {
                         char app_name[32];
                         unsigned int slash = 0;
                         while (file_path[slash] != '\0') ++slash;
@@ -318,7 +341,7 @@ static int run_command(const char *line, char *output, unsigned int output_size)
                     }
                     copy_text(output, output_size, "download-egna: failed");
                 }
-            } else copy_text(output, output_size, "download-egna: use -o /path file.egna http://host");
+            } else copy_text(output, output_size, "download-egna: use -o/-O /path file.egna http://host/path");
         } else {
             const char *url = spec;
             char target_name[32];

@@ -28,6 +28,8 @@ static unsigned long gui_ticks;
 static char terminal_output[80];
 static unsigned int terminal_output_length;
 static unsigned int gui_mode;
+static int shutdown_in_progress;
+static unsigned long shutdown_started_tick;
 static unsigned int cursor_saved[18][17];
 static unsigned int cursor_drawn_x;
 static unsigned int cursor_drawn_y;
@@ -385,6 +387,276 @@ static void draw_cursor(void)
     cursor_visible = 1;
 }
 
+static inline void outb(unsigned short port, unsigned char value)
+{
+    __asm__ volatile ("outb %0, %1" : : "a"(value), "Nd"(port));
+}
+
+static inline void outw(unsigned short port, unsigned short value)
+{
+    __asm__ volatile ("outw %0, %1" : : "a"(value), "Nd"(port));
+}
+
+static inline void io_wait(void)
+{
+    __asm__ volatile ("outb %%al, $0x80" : : "a"(0));
+}
+
+struct acpi_sdt_header {
+    char signature[4];
+    unsigned int length;
+    unsigned char revision;
+    unsigned char checksum;
+    char oem_id[6];
+    char oem_table_id[8];
+    unsigned int oem_revision;
+    unsigned int creator_id;
+    unsigned int creator_revision;
+} __attribute__((packed));
+
+static unsigned char acpi_checksum(const void *memory, unsigned int length)
+{
+    const unsigned char *bytes = (const unsigned char *)memory;
+    unsigned int sum = 0;
+    for (unsigned int index = 0; index < length; ++index)
+        sum += bytes[index];
+    return (unsigned char)(sum & 0xFF);
+}
+
+static unsigned long acpi_find_rsdp(void)
+{
+    for (unsigned long address = 0xE0000; address < 0x100000; address += 16) {
+        const unsigned char *region = (const unsigned char *)address;
+        if (region[0] != 'R' || region[1] != 'S' || region[2] != 'D' ||
+            region[3] != ' ' || region[4] != 'P' || region[5] != 'T' ||
+            region[6] != 'R' || region[7] != ' ') {
+            continue;
+        }
+        if (acpi_checksum(region, 20) == 0) return address;
+        if (address + 36 <= 0x100000) {
+            unsigned int length = (unsigned int)(region[10] | (region[11] << 8) |
+                (region[12] << 16) | (region[13] << 24));
+            if (length >= 36 && acpi_checksum(region, length) == 0) return address;
+        }
+    }
+    return 0;
+}
+
+static unsigned long long acpi_rsdp_table_address(unsigned long rsdp_address)
+{
+    if (rsdp_address == 0) return 0;
+    const unsigned char *rsdp = (const unsigned char *)rsdp_address;
+    if (rsdp[15] >= 2) {
+        unsigned long long value = 0;
+        value |= (unsigned long long)rsdp[24];
+        value |= (unsigned long long)rsdp[25] << 8;
+        value |= (unsigned long long)rsdp[26] << 16;
+        value |= (unsigned long long)rsdp[27] << 24;
+        value |= (unsigned long long)rsdp[28] << 32;
+        value |= (unsigned long long)rsdp[29] << 40;
+        value |= (unsigned long long)rsdp[30] << 48;
+        value |= (unsigned long long)rsdp[31] << 56;
+        return value;
+    }
+    return (unsigned long long)(rsdp[16] | (rsdp[17] << 8) |
+        (rsdp[18] << 16) | (rsdp[19] << 24));
+}
+
+static unsigned int acpi_sdt_length(unsigned long long table_address)
+{
+    if (table_address == 0) return 0;
+    const struct acpi_sdt_header *table = (const struct acpi_sdt_header *)table_address;
+    return table->length;
+}
+
+static int acpi_table_matches(unsigned long long table_address, const char *signature)
+{
+    if (table_address == 0) return 0;
+    const struct acpi_sdt_header *table = (const struct acpi_sdt_header *)table_address;
+    return table->signature[0] == signature[0] &&
+        table->signature[1] == signature[1] &&
+        table->signature[2] == signature[2] &&
+        table->signature[3] == signature[3];
+}
+
+static void acpi_find_fadt_table(unsigned long long table_address,
+    unsigned int entry_size, unsigned int *out_entry_count,
+    unsigned long long *out_fadt_address)
+{
+    *out_entry_count = 0;
+    *out_fadt_address = 0;
+    if (table_address == 0) return;
+    unsigned int length = acpi_sdt_length(table_address);
+    if (length < sizeof(struct acpi_sdt_header)) return;
+    unsigned int table_count = (length - sizeof(struct acpi_sdt_header)) / entry_size;
+    const unsigned char *table = (const unsigned char *)table_address;
+    for (unsigned int index = 0; index < table_count; ++index) {
+        unsigned long long entry_address = 0;
+        const unsigned char *entry_ptr = table + sizeof(struct acpi_sdt_header) + index * entry_size;
+        if (entry_size == 8) {
+            entry_address = (unsigned long long)
+                (entry_ptr[0] | (entry_ptr[1] << 8) | (entry_ptr[2] << 16) | (entry_ptr[3] << 24) |
+                 ((unsigned long long)entry_ptr[4] << 32) | ((unsigned long long)entry_ptr[5] << 40) |
+                 ((unsigned long long)entry_ptr[6] << 48) | ((unsigned long long)entry_ptr[7] << 56));
+        } else {
+            entry_address = (unsigned long long)(
+                entry_ptr[0] | (entry_ptr[1] << 8) | (entry_ptr[2] << 16) | (entry_ptr[3] << 24));
+        }
+        if (entry_address == 0) continue;
+        if (acpi_table_matches(entry_address, "FACP")) {
+            *out_fadt_address = entry_address;
+            *out_entry_count = table_count;
+            return;
+        }
+    }
+}
+
+static unsigned short acpi_fadt_pm1a_cnt_block(unsigned long long fadt_address)
+{
+    if (fadt_address == 0) return 0;
+    const unsigned char *fadt = (const unsigned char *)fadt_address;
+    if (acpi_sdt_length(fadt_address) < 0x40) return 0;
+    return (unsigned short)(fadt[0x32] | (fadt[0x33] << 8));
+}
+
+static unsigned short acpi_fadt_pm1b_cnt_block(unsigned long long fadt_address)
+{
+    if (fadt_address == 0) return 0;
+    const unsigned char *fadt = (const unsigned char *)fadt_address;
+    if (acpi_sdt_length(fadt_address) < 0x40) return 0;
+    return (unsigned short)(fadt[0x34] | (fadt[0x35] << 8));
+}
+
+static unsigned long long acpi_fadt_dsdt_address(unsigned long long fadt_address)
+{
+    if (fadt_address == 0) return 0;
+    const unsigned char *fadt = (const unsigned char *)fadt_address;
+    unsigned int length = acpi_sdt_length(fadt_address);
+    if (length < 0x2C) return 0;
+    unsigned long long dsdt = (unsigned long long)(
+        fadt[0x28] | (fadt[0x29] << 8) | (fadt[0x2A] << 16) | (fadt[0x2B] << 24));
+    if (length >= 0x50) {
+        unsigned long long x_dsdt = (unsigned long long)
+            (fadt[0x50] | (fadt[0x51] << 8) | (fadt[0x52] << 16) | (fadt[0x53] << 24) |
+             ((unsigned long long)fadt[0x54] << 32) | ((unsigned long long)fadt[0x55] << 40) |
+             ((unsigned long long)fadt[0x56] << 48) | ((unsigned long long)fadt[0x57] << 56));
+        if (x_dsdt != 0) dsdt = x_dsdt;
+    }
+    return dsdt;
+}
+
+static int acpi_parse_s5_slp_typ(unsigned long long dsdt_address, unsigned short *out_slp_typ)
+{
+    if (dsdt_address == 0 || out_slp_typ == (unsigned short *)0) return 0;
+    *out_slp_typ = 0;
+
+    const unsigned char *dsdt = (const unsigned char *)dsdt_address;
+    unsigned int length = acpi_sdt_length(dsdt_address);
+    if (length < 4) return 0;
+
+    for (unsigned int index = 0; index + 5 < length; ++index) {
+        if (dsdt[index] != '_' || dsdt[index + 1] != 'S' || dsdt[index + 2] != '5')
+            continue;
+        if (dsdt[index + 3] != 0 && dsdt[index + 3] != '\n' && dsdt[index + 3] != '\r')
+            continue;
+
+        unsigned int scan = index + 4;
+        while (scan + 2 < length) {
+            if (dsdt[scan] == 0x0A || dsdt[scan] == 0x0B || dsdt[scan] == 0x0C) {
+                unsigned short candidate = (unsigned short)(dsdt[scan + 1] | (dsdt[scan + 2] << 8));
+                if (candidate != 0) {
+                    *out_slp_typ = candidate;
+                    return 1;
+                }
+            }
+            ++scan;
+        }
+        break;
+    }
+    return 0;
+}
+
+static unsigned short acpi_make_s5_value(unsigned short slp_typ)
+{
+    const unsigned short slp_en = 1u << 13;
+    return (unsigned short)((slp_typ << 10) | slp_en);
+}
+
+static int acpi_shutdown_s5(void)
+{
+    unsigned long rsdp_address = acpi_find_rsdp();
+    if (rsdp_address == 0) {
+        serial_write("shutdown: no ACPI RSDP found\n");
+        return 0;
+    }
+
+    unsigned long long rsdt_or_xsdt = acpi_rsdp_table_address(rsdp_address);
+    if (rsdt_or_xsdt == 0) {
+        serial_write("shutdown: ACPI root table missing\n");
+        return 0;
+    }
+
+    unsigned int entry_size = 8;
+    unsigned int table_length = acpi_sdt_length(rsdt_or_xsdt);
+    if (table_length >= sizeof(struct acpi_sdt_header) &&
+        acpi_table_matches(rsdt_or_xsdt, "RSDT")) {
+        entry_size = 4;
+    } else if (acpi_table_matches(rsdt_or_xsdt, "XSDT")) {
+        entry_size = 8;
+    }
+
+    unsigned long long fadt_address = 0;
+    unsigned int ignored_count = 0;
+    acpi_find_fadt_table(rsdt_or_xsdt, entry_size, &ignored_count, &fadt_address);
+    if (fadt_address == 0) {
+        serial_write("shutdown: no ACPI FADT found\n");
+        return 0;
+    }
+
+    unsigned short pm1a_cnt_block = acpi_fadt_pm1a_cnt_block(fadt_address);
+    unsigned short pm1b_cnt_block = acpi_fadt_pm1b_cnt_block(fadt_address);
+    if (pm1a_cnt_block == 0 && pm1b_cnt_block == 0) {
+        serial_write("shutdown: ACPI PM1_CNT block missing\n");
+        return 0;
+    }
+
+    unsigned long long dsdt_address = acpi_fadt_dsdt_address(fadt_address);
+    unsigned short slp_typ = 0;
+    if (!acpi_parse_s5_slp_typ(dsdt_address, &slp_typ)) {
+        serial_write("shutdown: no valid _S5 DSDT profile\n");
+        return 0;
+    }
+
+    unsigned short sleep_value = acpi_make_s5_value(slp_typ);
+    serial_write("shutdown: issuing ACPI S5 request\n");
+    __asm__ volatile ("cli");
+    if (pm1a_cnt_block != 0) {
+        outw((unsigned short)pm1a_cnt_block, sleep_value);
+        io_wait();
+    }
+    if (pm1b_cnt_block != 0) {
+        outw((unsigned short)pm1b_cnt_block, sleep_value);
+        io_wait();
+    }
+    __asm__ volatile ("sti");
+    return 1;
+}
+
+static int power_off_system(void)
+{
+    if (shutdown_in_progress) return 1;
+    if (acpi_shutdown_s5()) {
+        shutdown_in_progress = 1;
+        shutdown_started_tick = gui_ticks;
+        serial_write("shutdown: request sent\n");
+        return 1;
+    }
+
+    shutdown_in_progress = 0;
+    serial_write("shutdown: request failed\n");
+    return 0;
+}
+
 static void draw_desktop(void)
 {
     unsigned int screen_width = framebuffer_width();
@@ -396,7 +668,7 @@ static void draw_desktop(void)
     framebuffer_fill_rect(0, 0, screen_width, 56, COLOR_BAR);
     framebuffer_draw_text(24, 18, "OAKOS DESKTOP", COLOR_TEXT, 2);
     framebuffer_fill_rect(screen_width - 120, 16, 88, 24, 0x4CC9A4);
-    framebuffer_draw_text(screen_width - 108, 24, "CLOSE", COLOR_BG, 1);
+    framebuffer_draw_text(screen_width - 112, 24, "DESLIGAR", COLOR_BG, 1);
     framebuffer_fill_rect(26, 78, 270, screen_height - 110, COLOR_PANEL);
     framebuffer_fill_rect(26, 78, 270, 32, COLOR_TITLE);
     framebuffer_draw_text(40, 88, "WORKSPACE", COLOR_TEXT, 1);
@@ -463,6 +735,8 @@ void gui_init(void)
     snake_app_init();
     gui_ticks = 0;
     last_mouse_packets = 0;
+    shutdown_in_progress = 0;
+    shutdown_started_tick = 0;
     if (framebuffer_available()) draw_desktop();
 }
 
@@ -720,8 +994,14 @@ void gui_mouse_input(int x, int y, unsigned char buttons)
         return;
     }
     if ((buttons & 1) == 0) return;
-    if (gui_mode != GUI_DESKTOP && x >= (int)framebuffer_width() - 120 &&
-        x < (int)framebuffer_width() - 32 && y >= 16 && y < 40) {
+    if (x >= (int)framebuffer_width() - 120 && x < (int)framebuffer_width() - 32 &&
+        y >= 16 && y < 40) {
+        if (gui_mode == GUI_DESKTOP) {
+            if (power_off_system()) {
+                return;
+            }
+            serial_write("shutdown: returning to desktop\n");
+        }
         gui_mode = GUI_DESKTOP;
         reset_apps();
         shell_set_output(terminal_output, sizeof(terminal_output), "app closed");
@@ -775,6 +1055,16 @@ void gui_tick(void)
 {
     if (!framebuffer_available()) return;
     ++gui_ticks;
+    if (shutdown_in_progress) {
+        if (gui_ticks - shutdown_started_tick > 3000) {
+            serial_write("shutdown: ACPI request did not power off; returning to desktop\n");
+            shutdown_in_progress = 0;
+            gui_mode = GUI_DESKTOP;
+            reset_apps();
+            draw_desktop();
+        }
+        return;
+    }
     if (gui_mode == GUI_TERMINAL) return;
     if (gui_mode == GUI_FULLSCREEN_SNAKE) {
         if (gui_ticks % 80 == 0) {

@@ -628,25 +628,106 @@ int network_tcp_close(int connection)
     return 0;
 }
 
+static int parse_http_target(const char *target, char *host, unsigned int host_capacity,
+    unsigned short *port, char *path, unsigned int path_capacity)
+{
+    const char *cursor = target;
+    unsigned int host_length = 0;
+    unsigned int path_length = 0;
+    unsigned int port_value = 80;
+    if (target == (const char *)0 || host == (char *)0 || path == (char *)0 ||
+        port == (unsigned short *)0) return 0;
+    if (cursor[0] == 'h' && cursor[1] == 't' && cursor[2] == 't' && cursor[3] == 'p' &&
+        cursor[4] == ':' && cursor[5] == '/' && cursor[6] == '/') cursor += 7;
+    else if (cursor[0] == 'h' && cursor[1] == 't' && cursor[2] == 't' && cursor[3] == 'p' &&
+        cursor[4] == 's' && cursor[5] == ':' && cursor[6] == '/' && cursor[7] == '/') {
+        return 0;
+    }
+    while (cursor[host_length] != '\0' && cursor[host_length] != ':' &&
+        cursor[host_length] != '/' && host_length + 1 < host_capacity)
+        ++host_length;
+    if (host_length == 0) return 0;
+    for (unsigned int index = 0; index < host_length; ++index)
+        host[index] = cursor[index];
+    host[host_length] = '\0';
+    if (cursor[host_length] == ':') {
+        const char *port_cursor = cursor + host_length + 1;
+        unsigned int port_index = 0;
+        while (port_cursor[port_index] != '\0' && port_cursor[port_index] != '/' &&
+            port_index < 6) {
+            if (port_cursor[port_index] < '0' || port_cursor[port_index] > '9') return 0;
+            port_value = port_value * 10 + (unsigned int)(port_cursor[port_index] - '0');
+            ++port_index;
+        }
+        if (port_value == 0 || port_value > 65535) return 0;
+        *port = (unsigned short)port_value;
+        cursor = port_cursor + port_index;
+    } else {
+        *port = 80;
+        cursor = cursor + host_length;
+    }
+    if (cursor[0] == '/') {
+        while (cursor[path_length] != '\0' && path_length + 1 < path_capacity) {
+            path[path_length] = cursor[path_length];
+            ++path_length;
+        }
+        path[path_length] = '\0';
+    } else {
+        path[0] = '/';
+        path[1] = '\0';
+    }
+    return 1;
+}
+
 int network_http_get(const char *host, char *output, unsigned int capacity)
 {
-    unsigned char request[256];
+    unsigned char request[512];
     unsigned int request_length = 0;
     unsigned int address;
+    char hostname[128];
+    char path[256];
+    unsigned short port = 80;
     if (host == (const char *)0 || output == (char *)0 || capacity == 0)
         return 0;
-    if (!network_dns_lookup(host, output, capacity)) return 0;
+    if (!parse_http_target(host, hostname, sizeof(hostname), &port, path, sizeof(path)))
+        return 0;
+    if (!network_dns_lookup(hostname, output, capacity)) return 0;
     address = dns_answer;
-    const char *prefix = "GET / HTTP/1.0\r\nHost: ";
-    const char *suffix = "\r\nConnection: close\r\n\r\n";
+    const char *prefix = "GET ";
+    const char *suffix = " HTTP/1.0\r\nHost: ";
+    const char *tail = "\r\nConnection: close\r\n\r\n";
     for (unsigned int index = 0; prefix[index] != '\0'; ++index)
         request[request_length++] = (unsigned char)prefix[index];
-    for (unsigned int index = 0; host[index] != '\0'; ++index)
-        if (request_length + 1 < sizeof(request)) request[request_length++] = (unsigned char)host[index];
+    for (unsigned int index = 0; path[index] != '\0'; ++index)
+        if (request_length + 1 < sizeof(request)) request[request_length++] = (unsigned char)path[index];
     for (unsigned int index = 0; suffix[index] != '\0'; ++index)
         if (request_length + 1 < sizeof(request)) request[request_length++] = (unsigned char)suffix[index];
+    for (unsigned int index = 0; hostname[index] != '\0'; ++index)
+        if (request_length + 1 < sizeof(request)) request[request_length++] = (unsigned char)hostname[index];
+    if (port != 80) {
+        char port_text[8];
+        unsigned int port_length = 0;
+        if (port < 10) port_text[port_length++] = (char)('0' + port);
+        else {
+            unsigned int value = port;
+            do {
+                port_text[port_length++] = (char)('0' + (value % 10));
+                value /= 10;
+            } while (value != 0);
+            for (unsigned int index = 0; index < port_length / 2; ++index) {
+                char tmp = port_text[index];
+                port_text[index] = port_text[port_length - 1 - index];
+                port_text[port_length - 1 - index] = tmp;
+            }
+        }
+        request[request_length++] = ':';
+        for (unsigned int index = 0; index < port_length; ++index)
+            if (request_length + 1 < sizeof(request)) request[request_length++] = (unsigned char)port_text[index];
+    }
+    for (unsigned int index = 0; tail[index] != '\0'; ++index)
+        if (request_length + 1 < sizeof(request)) request[request_length++] = (unsigned char)tail[index];
     tcp_data_length = 0;
-    if (!network_tcp_connect(0, address, 80)) return 0;
+    if (!network_tcp_connect(0, address, port)) return 0;
     if (network_tcp_send(0, request, request_length) < 0) return 0;
     for (unsigned long wait = timer_ticks(); timer_ticks() - wait < 300; ) {
         long received = network_tcp_receive(0, (unsigned char *)output,
