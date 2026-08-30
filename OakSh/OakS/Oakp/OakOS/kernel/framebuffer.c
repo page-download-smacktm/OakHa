@@ -1,26 +1,46 @@
 #include "acorn/framebuffer.h"
 #include "acorn/assets.h"
+#include "acorn/serial.h"
 
 #define MULTIBOOT_FRAMEBUFFER_FLAG 0x00001000
 #define MULTIBOOT_FRAMEBUFFER_RGB 1
 #define FRAMEBUFFER_BPP 32
 
-struct multiboot_framebuffer_info {
+struct multiboot_info {
     unsigned int flags;
-    unsigned char reserved[84];
-    unsigned long address;
-    unsigned int pitch;
-    unsigned int width;
-    unsigned int height;
-    unsigned char bpp;
-    unsigned char type;
+    unsigned int mem_lower;
+    unsigned int mem_upper;
+    unsigned int boot_device;
+    unsigned int command_line;
+    unsigned int modules_count;
+    unsigned int modules_addr;
+    unsigned int symbols[4];
+    unsigned int mmap_length;
+    unsigned int mmap_addr;
+    unsigned int drives_length;
+    unsigned int drives_addr;
+    unsigned int config_table;
+    unsigned int boot_loader_name;
+    unsigned int apm_table;
+    unsigned int vbe_control_info;
+    unsigned int vbe_mode_info;
+    unsigned short vbe_mode;
+    unsigned short vbe_interface_seg;
+    unsigned short vbe_interface_off;
+    unsigned short vbe_interface_len;
+    unsigned long long framebuffer_addr;
+    unsigned int framebuffer_pitch;
+    unsigned int framebuffer_width;
+    unsigned int framebuffer_height;
+    unsigned char framebuffer_bpp;
+    unsigned char framebuffer_type;
     unsigned char red_position;
     unsigned char red_mask;
     unsigned char green_position;
     unsigned char green_mask;
     unsigned char blue_position;
     unsigned char blue_mask;
-};
+} __attribute__((packed));
 
 static volatile unsigned char *buffer;
 static unsigned int pitch;
@@ -32,6 +52,7 @@ static unsigned char green_position;
 static unsigned char green_mask;
 static unsigned char blue_position;
 static unsigned char blue_mask;
+static unsigned char bytes_per_pixel;
 
 static unsigned int pack_channel(unsigned int value, unsigned char position,
     unsigned char bits)
@@ -58,28 +79,55 @@ static unsigned int pack_color(unsigned int color)
         pack_channel(color & 0xFF, blue_position, blue_mask);
 }
 
+static void write_pixel(unsigned char *pixel, unsigned int color)
+{
+    if (bytes_per_pixel == 3) {
+        pixel[0] = (unsigned char)(color & 0xFF);
+        pixel[1] = (unsigned char)((color >> 8) & 0xFF);
+        pixel[2] = (unsigned char)((color >> 16) & 0xFF);
+        return;
+    }
+    *(volatile unsigned int *)pixel = pack_color(color);
+}
+
+static unsigned int read_pixel_value(const unsigned char *pixel)
+{
+    if (bytes_per_pixel == 3)
+        return (unsigned int)pixel[0] |
+            ((unsigned int)pixel[1] << 8) |
+            ((unsigned int)pixel[2] << 16);
+    unsigned int value = *(const volatile unsigned int *)pixel;
+    return (unsigned int)
+        ((unpack_channel(value, red_position, red_mask) << 16) |
+         (unpack_channel(value, green_position, green_mask) << 8) |
+         unpack_channel(value, blue_position, blue_mask));
+}
+
 void framebuffer_init(unsigned long multiboot_info)
 {
-    struct multiboot_framebuffer_info *info =
-        (struct multiboot_framebuffer_info *)multiboot_info;
+    struct multiboot_info *info = (struct multiboot_info *)multiboot_info;
     buffer = (volatile unsigned char *)0;
     width = 0;
     height = 0;
+    bytes_per_pixel = 4;
     if (multiboot_info == 0 || (info->flags & MULTIBOOT_FRAMEBUFFER_FLAG) == 0 ||
-        info->type != MULTIBOOT_FRAMEBUFFER_RGB || info->bpp != FRAMEBUFFER_BPP ||
-        info->address == 0 || info->pitch < info->width * 4)
+        info->framebuffer_type != MULTIBOOT_FRAMEBUFFER_RGB ||
+        (info->framebuffer_bpp != 24 && info->framebuffer_bpp != 32) ||
+        info->framebuffer_addr == 0)
         return;
-    buffer = (volatile unsigned char *)info->address;
-    pitch = info->pitch;
-    width = info->width;
-    height = info->height;
-    const unsigned char *raw_info = (const unsigned char *)info;
-    red_position = raw_info[112];
-    red_mask = raw_info[113];
-    green_position = raw_info[114];
-    green_mask = raw_info[115];
-    blue_position = raw_info[116];
-    blue_mask = raw_info[117];
+    bytes_per_pixel = (unsigned char)(info->framebuffer_bpp / 8);
+    if (info->framebuffer_pitch < info->framebuffer_width * bytes_per_pixel)
+        return;
+    buffer = (volatile unsigned char *)(unsigned long)info->framebuffer_addr;
+    pitch = info->framebuffer_pitch;
+    width = info->framebuffer_width;
+    height = info->framebuffer_height;
+    red_position = info->red_position;
+    red_mask = info->red_mask;
+    green_position = info->green_position;
+    green_mask = info->green_mask;
+    blue_position = info->blue_position;
+    blue_mask = info->blue_mask;
 }
 
 int framebuffer_available(void)
@@ -206,25 +254,18 @@ void framebuffer_fill_rect(unsigned int x, unsigned int y,
     if (!framebuffer_available() || x >= width || y >= height) return;
     if (rectangle_width > width - x) rectangle_width = width - x;
     if (rectangle_height > height - y) rectangle_height = height - y;
-    unsigned int pixel = pack_color(color);
     for (unsigned int row = 0; row < rectangle_height; ++row) {
-        volatile unsigned int *line = (volatile unsigned int *)(buffer +
-            (y + row) * pitch + x * 4);
+        unsigned char *line = (unsigned char *)(buffer + (y + row) * pitch + x * bytes_per_pixel);
         for (unsigned int column = 0; column < rectangle_width; ++column)
-            line[column] = pixel;
+            write_pixel(line + column * bytes_per_pixel, color);
     }
 }
 
 unsigned int framebuffer_read_pixel(unsigned int x, unsigned int y)
 {
     if (!framebuffer_available() || x >= width || y >= height) return 0;
-    volatile unsigned int *pixel = (volatile unsigned int *)(buffer +
-        y * pitch + x * 4);
-    unsigned int value = *pixel;
-    unsigned int red = unpack_channel(value, red_position, red_mask);
-    unsigned int green = unpack_channel(value, green_position, green_mask);
-    unsigned int blue = unpack_channel(value, blue_position, blue_mask);
-    return (red << 16) | (green << 8) | blue;
+    const volatile unsigned char *pixel = buffer + y * pitch + x * bytes_per_pixel;
+    return read_pixel_value((const unsigned char *)pixel);
 }
 
 int framebuffer_self_test(void)

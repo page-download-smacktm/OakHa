@@ -2,7 +2,9 @@ PROJECT := oak-os
 BUILD := build
 ISO_DIR := $(BUILD)/iso
 KERNEL := $(BUILD)/acorn.elf
+UEFI_BIN := $(BUILD)/oak-os-uefi.efi
 ISO := $(BUILD)/oak-os.iso
+HP_ISO := $(BUILD)/oak-os-hp.iso
 DISK := $(BUILD)/oak-disk.img
 LIMBO_ISO := $(BUILD)/oakos-limbo.iso
 LIMBO_DISK := $(BUILD)/oakos-limbo-data.qcow2
@@ -31,6 +33,7 @@ OBJCOPY := objcopy
 
 CFLAGS := -std=c11 -ffreestanding -fno-builtin -fno-stack-protector -fno-pic -mno-red-zone -mno-mmx -mno-sse -mno-sse2 -Wall -Wextra -Werror -O2 -g -Ikernel/include -Ithird_party/bearssl/inc
 CXXFLAGS := -std=c++11 -ffreestanding -fno-builtin -fno-exceptions -fno-rtti -fno-stack-protector -fno-pic -mno-red-zone -mno-mmx -mno-sse -mno-sse2 -Wall -Wextra -Werror -O2 -g -Ikernel/include
+UEFI_CFLAGS := -std=c11 -ffreestanding -fno-builtin -fno-stack-protector -fno-pic -mno-red-zone -mno-mmx -mno-sse -mno-sse2 -fshort-wchar -Wall -Wextra -Werror -O2 -g
 ASFLAGS := -g
 LDFLAGS := -nostdlib -z max-page-size=0x1000 -z noexecstack -T linker.ld
 
@@ -39,9 +42,11 @@ ASM_SOURCES := boot/boot.S kernel/idt.S kernel/context.S
 CXX_SOURCES := kernel/cxx_runtime.cpp kernel/dillo_platform.cpp
 OBJECTS := $(C_SOURCES:%.c=$(BUILD)/%.o) $(CXX_SOURCES:%.cpp=$(BUILD)/%.o) $(ASM_SOURCES:%.S=$(BUILD)/%.o) $(USER_BINARY_OBJ) $(ASSET_OBJECT)
 
-.PHONY: all kernel iso limbo run run-gui run-vnc stop-vnc debug test bearssl dillo-port cxx-runtime-test dillo-platform-test clean
+.PHONY: all kernel uefi iso iso-hp limbo run run-gui run-vnc run-vnc-hp stop-vnc debug test bearssl dillo-port cxx-runtime-test dillo-platform-test clean
 
 all: iso
+
+uefi: $(UEFI_BIN)
 
 bearssl:
 	$(MAKE) -C third_party/bearssl
@@ -64,6 +69,14 @@ $(BUILD)/%.o: %.S
 $(BUILD)/%.o: %.cpp
 	@mkdir -p $(@D)
 	$(CXX) $(CXXFLAGS) -c $< -o $@
+
+$(UEFI_BIN): $(BUILD)/kernel/efi_main.o
+	@mkdir -p $(@D)
+	ld -m i386pep -nostdlib -n -e efi_main -o $@ $<
+
+$(BUILD)/kernel/efi_main.o: kernel/efi_main.c
+	@mkdir -p $(@D)
+	$(CC) $(UEFI_CFLAGS) -c $< -o $@
 
 $(ASSET_SOURCE): Images/FundoIcon.png Images/ShellIcon.png Images/SnakeIcon.png Images/MinesweeperIcon.png Images/TetrisIcon.png Images/PongIcon.png tools/generate_assets.py
 	@mkdir -p $(@D)
@@ -126,6 +139,14 @@ iso: $(KERNEL) grub.cfg
 	cp grub.cfg $(ISO_DIR)/boot/grub/grub.cfg
 	grub-mkrescue -o $(ISO) $(ISO_DIR)
 
+iso-hp: $(KERNEL) grub.cfg
+	@command -v grub-mkrescue >/dev/null || { echo "erro: grub-mkrescue nao esta instalado" >&2; exit 1; }
+	mkdir -p $(ISO_DIR)/boot/grub
+	cp $(KERNEL) $(ISO_DIR)/boot/acorn.elf
+	cp grub.cfg $(ISO_DIR)/boot/grub/grub.cfg
+	grub-mkrescue -o $(HP_ISO) $(ISO_DIR)
+	@echo "ISO HP: $(HP_ISO)"
+
 limbo: iso $(DISK)
 	@command -v qemu-img >/dev/null || { echo "erro: qemu-img nao esta instalado" >&2; exit 1; }
 	@$(MAKE) -s stop-vnc
@@ -154,6 +175,20 @@ run-vnc: iso $(DISK)
 	@$(MAKE) -s stop-vnc
 	@echo "noVNC disponivel em http://$(VNC_HOST):$(VNC_PORT)/vnc.html?autoconnect=true&resize=scale&show_dot=true"
 	@qemu-system-x86_64 -cpu max -machine pc -nic model=e1000 -vga std -cdrom $(ISO) -drive file=$(DISK),format=raw,if=ide -serial stdio -display vnc=$(VNC_HOST):$(VNC_DISPLAY) -no-reboot -no-shutdown & qemu_pid=$$!; \
+	websockify --web="$(VNC_WEB)" --heartbeat=30 $(VNC_BIND_HOST):$(VNC_PORT) $(VNC_HOST):$(VNC_SERVER_PORT) & proxy_pid=$$!; \
+	cleanup() { kill $$proxy_pid $$qemu_pid 2>/dev/null || true; wait $$proxy_pid $$qemu_pid 2>/dev/null || true; }; \
+	trap cleanup EXIT INT TERM; \
+	while kill -0 $$qemu_pid 2>/dev/null && kill -0 $$proxy_pid 2>/dev/null; do sleep 1; done
+
+run-vnc-hp: iso-hp $(DISK)
+	@command -v qemu-system-x86_64 >/dev/null || { echo "erro: qemu-system-x86_64 nao esta instalado" >&2; exit 1; }
+	@command -v websockify >/dev/null || { echo "erro: websockify nao esta instalado" >&2; exit 1; }
+	@test -d "$(VNC_WEB)" || { echo "erro: diretorio do noVNC nao encontrado: $(VNC_WEB)" >&2; exit 1; }
+	@$(MAKE) -s stop-vnc
+	@echo "HP G42-215BR profile: QEMU legacy BIOS + older chipset + iGPU-like VGA + 2 GiB RAM"
+	@echo "ISO HP: $(HP_ISO)"
+	@echo "noVNC disponivel em http://$(VNC_HOST):$(VNC_PORT)/vnc.html?autoconnect=true&resize=scale&show_dot=true"
+	@qemu-system-x86_64 -machine pc-i440fx-2.1,accel=tcg -cpu qemu64 -m 2048 -rtc base=localtime -vga cirrus -nic model=e1000 -cdrom $(HP_ISO) -drive file=$(DISK),format=raw,if=ide -serial stdio -display vnc=$(VNC_HOST):$(VNC_DISPLAY) -no-reboot -no-shutdown & qemu_pid=$$!; \
 	websockify --web="$(VNC_WEB)" --heartbeat=30 $(VNC_BIND_HOST):$(VNC_PORT) $(VNC_HOST):$(VNC_SERVER_PORT) & proxy_pid=$$!; \
 	cleanup() { kill $$proxy_pid $$qemu_pid 2>/dev/null || true; wait $$proxy_pid $$qemu_pid 2>/dev/null || true; }; \
 	trap cleanup EXIT INT TERM; \

@@ -29,28 +29,22 @@ _start:
     hlt
 
 setup_long_mode:
-    mov $page_table_l3, %edi
+    mov $pml4, %edi
     xor %eax, %eax
     mov $4096, %ecx
     rep stosl
-    mov $page_table_l3, %edi
-    mov $page_table_l2, %eax
-    or $0x7, %eax
-    mov %eax, (%edi)
-    mov $page_table_l2, %edi
-    mov $page_table_l1, %eax
-    or $0x7, %eax
-    mov %eax, (%edi)
-    mov $page_table_l1_1, %eax
-    or $0x7, %eax
-    mov %eax, 8(%edi)
-    mov $page_table_l1_2, %eax
-    or $0x7, %eax
-    mov %eax, 16(%edi)
-    mov $page_table_l1_3, %eax
-    or $0x7, %eax
-    mov %eax, 24(%edi)
-    mov $page_table_l1, %edi
+
+    mov $pml4, %eax
+    mov $pdpt, %ebx
+    or $0x7, %ebx
+    mov %ebx, (%eax)
+
+    mov $pdpt, %eax
+    mov $pd, %ebx
+    or $0x7, %ebx
+    mov %ebx, (%eax)
+
+    mov $pd, %edi
     mov $0x87, %eax
     mov $512, %ecx
 1:
@@ -58,42 +52,23 @@ setup_long_mode:
     add $0x200000, %eax
     add $8, %edi
     loop 1b
-    mov $page_table_l1_1, %edi
-    mov $0x40000087, %eax
-    mov $512, %ecx
-2:
-    mov %eax, (%edi)
-    add $0x200000, %eax
-    add $8, %edi
-    loop 2b
-    mov $page_table_l1_2, %edi
-    mov $0x80000087, %eax
-    mov $512, %ecx
-3:
-    mov %eax, (%edi)
-    add $0x200000, %eax
-    add $8, %edi
-    loop 3b
-    mov $page_table_l1_3, %edi
-    mov $0xC0000087, %eax
-    mov $512, %ecx
-4:
-    mov %eax, (%edi)
-    add $0x200000, %eax
-    add $8, %edi
-    loop 4b
-    mov $page_table_l3, %eax
+
+    mov $pml4, %eax
     mov %eax, %cr3
+
     mov %cr4, %eax
     or $0x20, %eax
     mov %eax, %cr4
+
     mov $0xC0000080, %ecx
     rdmsr
     or $0x100, %eax
     wrmsr
+
     mov %cr0, %eax
     or $0x80000001, %eax
     mov %eax, %cr0
+
     lgdt gdt64_pointer
     ljmp $0x08, $long_mode_start
 
@@ -155,12 +130,9 @@ gdt64_pointer:
 
 .section .bss
 .align 4096
-page_table_l3: .skip 4096
-page_table_l2: .skip 4096
-page_table_l1: .skip 4096
-page_table_l1_1: .skip 4096
-page_table_l1_2: .skip 4096
-page_table_l1_3: .skip 4096
+pml4: .skip 4096
+pdpt: .skip 4096
+pd: .skip 4096
 .align 16
 stack_bottom: .skip 16384
 stack_top:

@@ -1,20 +1,24 @@
 .section .text
 .code64
-.global acorn_interrupt_stub
-.type acorn_interrupt_stub, @function
+.global acorn_exception_stub
+.type acorn_exception_stub, @function
 .extern acorn_exception
-.extern acorn_timer_irq
-.extern acorn_keyboard_irq
-.extern acorn_mouse_irq
-.extern acorn_syscall_dispatch_entry
-.extern acorn_user_exit
 
-acorn_interrupt_stub:
+acorn_exception_stub:
     cli
-    call acorn_exception
-1:
-    hlt
-    jmp 1b
+    movb $0x20, %al
+    outb %al, $0x20
+    iretq
+
+.global acorn_irq_stub
+.type acorn_irq_stub, @function
+.extern acorn_unknown_irq
+
+acorn_irq_stub:
+    cli
+    movb $0x20, %al
+    outb %al, $0x20
+    iretq
 
 .global acorn_timer_stub
 acorn_timer_stub:

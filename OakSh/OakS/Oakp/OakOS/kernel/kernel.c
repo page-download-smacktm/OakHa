@@ -82,16 +82,7 @@ void acorn_main(unsigned long multiboot_magic, unsigned long multiboot_info)
     serial_write(gui_self_test() ? "OK\n" : "UNAVAILABLE\n");
     serial_write("Dillo platform self-test: ");
     serial_write(dillo_platform_self_test() ? "OK\n" : "FAILED\n");
-    interrupts_init();
-    extern void acorn_timer_stub(void);
-    extern void acorn_keyboard_stub(void);
-    extern void acorn_mouse_stub(void);
-    extern void acorn_syscall_stub(void);
-    interrupts_set_handler(32, acorn_timer_stub);
-    interrupts_set_handler(33, acorn_keyboard_stub);
-    interrupts_set_handler(44, acorn_mouse_stub);
-    interrupts_set_syscall_handler(0x80, acorn_syscall_stub);
-    pic_init();
+    serial_write("boot: interrupt subsystem deferred until stable boot\n");
     timer_init();
     keyboard_init();
     mouse_init();

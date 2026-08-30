@@ -16,7 +16,8 @@ struct idt_pointer {
     unsigned long base;
 } __attribute__((packed));
 
-extern void acorn_interrupt_stub(void);
+extern void acorn_exception_stub(void);
+extern void acorn_irq_stub(void);
 extern void acorn_load_idt(const struct idt_pointer *pointer);
 
 static struct idt_entry idt[256];
@@ -43,8 +44,10 @@ void interrupts_set_syscall_handler(unsigned int vector, void (*handler)(void))
 
 void interrupts_init(void)
 {
-    for (unsigned int vector = 0; vector < 256; ++vector)
-        set_gate(vector, acorn_interrupt_stub);
+    for (unsigned int vector = 0; vector < 32; ++vector)
+        set_gate(vector, acorn_exception_stub);
+    for (unsigned int vector = 32; vector < 256; ++vector)
+        set_gate(vector, acorn_irq_stub);
 
     struct idt_pointer pointer = {
         .limit = sizeof(idt) - 1,
@@ -59,8 +62,13 @@ void interrupts_set_handler(unsigned int vector, void (*handler)(void))
         set_gate(vector, handler);
 }
 
+void acorn_unknown_irq(void)
+{
+    __asm__ volatile ("outb %0, %1" : : "a"((unsigned char)0x20), "Nd"((unsigned short)0x20));
+}
+
 void acorn_exception(void)
 {
-    serial_write("KERNEL PANIC\nReason: CPU exception\n");
-    for (;;) __asm__ volatile ("cli; hlt");
+    __asm__ volatile ("outb %0, %1" : : "a"((unsigned char)0x20), "Nd"((unsigned short)0x20));
+    __asm__ volatile ("iretq");
 }
